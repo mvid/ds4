@@ -78,7 +78,6 @@ def run_capture(
     env["DS4_METAL_GRAPH_DUMP_PREFIX"] = str(dump_prefix)
     env["DS4_METAL_GRAPH_DUMP_NAME"] = component
     env["DS4_METAL_GRAPH_DUMP_POS"] = "0"
-    env["DS4_QWEN4_PREFILL_CHUNK"] = str(max(ctx, 1024))
 
     cmd = [
         str(ds4),
@@ -88,7 +87,9 @@ def run_capture(
         "-n", "1",
     ]
     if profile != "mimo-v2.6-flash":
-        cmd += ["--prefill-chunk", str(max(ctx, 1024))]
+        prefill_chunk = str(max(ctx, 1024))
+        env["DS4_QWEN4_PREFILL_CHUNK"] = prefill_chunk
+        cmd += ["--prefill-chunk", prefill_chunk]
     if system:
         cmd += ["--system", system]
     cmd.append("--think" if think else "--nothink")
