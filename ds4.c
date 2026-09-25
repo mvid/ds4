@@ -34,6 +34,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
 #include <sys/sysctl.h>
 #endif
@@ -55,6 +56,9 @@
 #ifdef __APPLE__
 #define DS4_HAS_QWEN4_METAL 1
 #endif
+#endif
+#if !defined(DS4_NO_GPU) && defined(__APPLE__)
+#define DS4_HAS_MIMO2_METAL 1
 #endif
 #ifdef DS4_ROCM_BUILD
 #include "ds4_linux_memory.h"
@@ -497,7 +501,7 @@ enum {
     DS4_MAX_EMBD             = 7168,
     DS4_MAX_VOCAB            = 248320,
     DS4_MAX_HEAD             = 128,
-    DS4_MAX_HEAD_KV          = 2,
+    DS4_MAX_HEAD_KV          = 8,
     DS4_MAX_HEAD_DIM         = 576,
     DS4_MAX_VALUE_DIM        = 512,
     DS4_MAX_ROT              = 64,
@@ -527,6 +531,7 @@ typedef enum {
     DS4_MODEL_FAMILY_GLM_DSA   = 1,
     DS4_MODEL_FAMILY_DEEPSEEK41 = 2,
     DS4_MODEL_FAMILY_QWEN4_EXP = 3,
+    DS4_MODEL_FAMILY_MIMO2 = 4,
 } ds4_model_family;
 
 typedef enum {
@@ -537,6 +542,8 @@ typedef enum {
     DS4_VARIANT_FLASH41 = 4,
     DS4_VARIANT_QWEN4_EXP = 5,
     DS4_VARIANT_QWEN4_MINI = 6,
+    DS4_VARIANT_MIMO26_FLASH = 7,
+    DS4_VARIANT_MIMO26_MINI = 8,
 } ds4_variant;
 
 typedef struct {
@@ -548,6 +555,8 @@ typedef struct {
     uint32_t n_vocab;
     uint32_t n_head;
     uint32_t n_head_kv;
+    uint32_t n_head_kv_swa;
+    uint32_t n_global_layers;
     uint32_t n_head_dim;
     uint32_t n_value_dim;
     uint32_t n_rot;
@@ -595,8 +604,12 @@ typedef struct {
     float rope_yarn_beta_fast;
     float rope_yarn_beta_slow;
     float compress_rope_freq_base;
+    float rope_freq_base_swa;
+    float attn_value_scale;
     float kda_gate_lower_bound;
     uint64_t rope_orig_ctx;
+    bool attn_sink_swa;
+    bool attn_sink_global;
 } ds4_shape;
 
 static const ds4_shape DS4_SHAPE_FLASH = {
@@ -877,6 +890,68 @@ static const ds4_shape DS4_SHAPE_QWEN4_MINI = {
     .rope_orig_ctx = 262144,
 };
 
+static const ds4_shape DS4_SHAPE_MIMO26_MINI = {
+    .name = "MiMo V2.6 Flash mini",
+    .family = DS4_MODEL_FAMILY_MIMO2,
+    .variant = DS4_VARIANT_MIMO26_MINI,
+    .n_layer = 6,
+    .n_embd = 256,
+    .n_vocab = 152576,
+    .n_head = 8,
+    .n_head_kv = 2,
+    .n_head_kv_swa = 4,
+    .n_global_layers = 2,
+    .n_head_dim = 64,
+    .n_value_dim = 32,
+    .n_rot = 32,
+    .n_expert = 8,
+    .n_expert_used = 2,
+    .n_ff_exp = 64,
+    .n_ff_dense = 512,
+    .n_swa = 128,
+    .n_nextn_predict = 1,
+    .n_leading_dense = 1,
+    .rms_eps = 1.0e-6f,
+    .rope_freq_base = 10000000.0f,
+    .rope_scale_factor = 1.0f,
+    .rope_freq_base_swa = 10000.0f,
+    .attn_value_scale = 0.707f,
+    .expert_weight_scale = 1.0f,
+    .attn_sink_swa = true,
+    .rope_orig_ctx = 1048576,
+};
+
+static const ds4_shape DS4_SHAPE_MIMO26_FLASH = {
+    .name = "MiMo V2.6 Flash",
+    .family = DS4_MODEL_FAMILY_MIMO2,
+    .variant = DS4_VARIANT_MIMO26_FLASH,
+    .n_layer = 51,
+    .n_embd = 4096,
+    .n_vocab = 152576,
+    .n_head = 64,
+    .n_head_kv = 4,
+    .n_head_kv_swa = 8,
+    .n_global_layers = 9,
+    .n_head_dim = 192,
+    .n_value_dim = 128,
+    .n_rot = 64,
+    .n_expert = 256,
+    .n_expert_used = 8,
+    .n_ff_exp = 2048,
+    .n_ff_dense = 16384,
+    .n_swa = 128,
+    .n_nextn_predict = 3,
+    .n_leading_dense = 1,
+    .rms_eps = 1.0e-6f,
+    .rope_freq_base = 10000000.0f,
+    .rope_scale_factor = 1.0f,
+    .rope_freq_base_swa = 10000.0f,
+    .attn_value_scale = 0.707f,
+    .expert_weight_scale = 1.0f,
+    .attn_sink_swa = true,
+    .rope_orig_ctx = 1048576,
+};
+
 static ds4_shape g_ds4_shape = {
     .name = "DeepSeek V4 Flash",
     .family = DS4_MODEL_FAMILY_DEEPSEEK4,
@@ -918,6 +993,8 @@ static ds4_shape g_ds4_shape = {
 static bool g_ds4_flash_vision_exp = false;
 
 static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
+static uint8_t g_ds4_layer_is_swa[DS4_MAX_LAYER];
+static uint32_t g_ds4_layer_head_kv[DS4_MAX_LAYER];
 
 #define DS4_MODEL_SHAPE_NAME          (g_ds4_shape.name)
 #define DS4_MODEL_FAMILY              (g_ds4_shape.family)
@@ -927,6 +1004,7 @@ static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
 #define DS4_N_VOCAB                   (g_ds4_shape.n_vocab)
 #define DS4_N_HEAD                    (g_ds4_shape.n_head)
 #define DS4_N_HEAD_KV                 (g_ds4_shape.n_head_kv)
+#define DS4_N_HEAD_KV_SWA             (g_ds4_shape.n_head_kv_swa)
 #define DS4_N_HEAD_DIM                (g_ds4_shape.n_head_dim)
 #define DS4_N_VALUE_DIM               (g_ds4_shape.n_value_dim)
 #define DS4_N_ROT                     (g_ds4_shape.n_rot)
@@ -958,6 +1036,8 @@ static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
 #define DS4_EXPERT_WEIGHT_SCALE       (g_ds4_shape.expert_weight_scale)
 #define DS4_SWIGLU_CLAMP_EXP          (g_ds4_shape.swiglu_clamp_exp)
 #define DS4_ROPE_FREQ_BASE            (g_ds4_shape.rope_freq_base)
+#define DS4_ROPE_FREQ_BASE_SWA        (g_ds4_shape.rope_freq_base_swa)
+#define DS4_ATTN_VALUE_SCALE          (g_ds4_shape.attn_value_scale)
 #define DS4_ROPE_SCALE_FACTOR         (g_ds4_shape.rope_scale_factor)
 #define DS4_ROPE_YARN_BETA_FAST       (g_ds4_shape.rope_yarn_beta_fast)
 #define DS4_ROPE_YARN_BETA_SLOW       (g_ds4_shape.rope_yarn_beta_slow)
@@ -1008,6 +1088,24 @@ static bool ds4_glm53_layer_is_kda(uint32_t il) {
 
 static bool ds4_model_is_qwen4(void) {
     return DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4_EXP;
+}
+
+static bool ds4_model_is_mimo2(void) {
+    return DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2;
+}
+
+static bool ds4_mimo2_layer_is_swa(uint32_t il) {
+    return ds4_model_is_mimo2() && il < DS4_N_LAYER && g_ds4_layer_is_swa[il] != 0;
+}
+
+static bool ds4_mimo2_layer_is_nextn(uint32_t il) {
+    return ds4_model_is_mimo2() && il < DS4_N_LAYER &&
+           il >= DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+}
+
+static uint32_t ds4_layer_head_kv(uint32_t il) {
+    return ds4_model_is_mimo2() && il < DS4_N_LAYER ?
+           g_ds4_layer_head_kv[il] : DS4_N_HEAD_KV;
 }
 
 /* Trunk layers repeat 3 GDN + 1 full attention; the MTP block is attention. */
@@ -4617,6 +4715,7 @@ typedef struct {
     ds4_tensor *attn_k_b;
     ds4_tensor *attn_v_b;
     ds4_tensor *attn_sinks;
+    ds4_tensor *attn_qkv;
     ds4_tensor *attn_output;
     ds4_tensor *attn_output_a;
     ds4_tensor *attn_output_b;
@@ -4652,6 +4751,7 @@ typedef struct {
     ds4_tensor *hc_ffn_scale;
     ds4_tensor *hc_ffn_base;
     ds4_tensor *ffn_norm;
+    ds4_tensor *layer_output_norm;
     ds4_tensor *ffn_gate_tid2eid;
     ds4_tensor *ffn_gate;
     ds4_tensor *ffn_up;
@@ -5341,7 +5441,7 @@ static void tensor_expect_routed_expert(
 
 static bool weights_have_output_head(const ds4_weights *w) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41 || ds4_model_is_mimo2()) {
         return w && w->output_norm && w->output;
     }
     if (ds4_model_is_qwen4()) {
@@ -5357,7 +5457,7 @@ static bool weights_have_output_head(const ds4_weights *w) {
 
 static bool weights_have_partial_output_head(const ds4_weights *w) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41 || ds4_model_is_mimo2()) {
         return w && (w->output_norm || w->output);
     }
     if (ds4_model_is_qwen4()) {
@@ -5634,8 +5734,95 @@ static void weights_validate_qwen4_layout(
     }
 }
 
+static bool weights_mimo2_layer_has_required(const ds4_layer_weights *l, uint32_t il) {
+    if (!l || !l->attn_norm || !l->attn_qkv || !l->attn_output || !l->ffn_norm)
+        return false;
+    if (ds4_mimo2_layer_is_swa(il) != (l->attn_sinks != NULL)) return false;
+    if (ds4_mimo2_layer_is_nextn(il)) {
+        return l->nextn_eh_proj && l->nextn_enorm && l->nextn_hnorm &&
+               l->layer_output_norm && l->ffn_gate && l->ffn_up && l->ffn_down;
+    }
+    if (il < DS4_N_LEADING_DENSE)
+        return l->ffn_gate && l->ffn_up && l->ffn_down;
+    return l->ffn_gate_inp && l->ffn_exp_probs_b && l->ffn_gate_exps &&
+           l->ffn_up_exps && l->ffn_down_exps;
+}
+
+static void tensor_expect_mimo2_dense(const ds4_tensor *t,
+                                      uint32_t ndim, uint64_t d0, uint64_t d1) {
+    if (!t || (t->type != DS4_TENSOR_Q8_0 && t->type != DS4_TENSOR_Q4_K &&
+               t->type != DS4_TENSOR_F16 && t->type != DS4_TENSOR_BF16))
+        ds4_die("unsupported MiMo dense tensor type");
+    tensor_expect_layout(t, t->type, ndim, d0, d1, 0);
+}
+
+static void weights_validate_mimo2_layout(const ds4_weights *w,
+                                          uint32_t layer_start, uint32_t layer_end,
+                                          bool require_token_embd, bool require_output) {
+    if (require_token_embd && !w->token_embd)
+        ds4_die("MiMo token embedding is missing");
+    if (w->token_embd)
+        tensor_expect_mimo2_dense(w->token_embd, 2, DS4_N_EMBD, DS4_N_VOCAB);
+    if (require_output && !weights_have_output_head(w))
+        ds4_die("MiMo output head is missing");
+    if (weights_have_partial_output_head(w) && !weights_have_output_head(w))
+        ds4_die("partial MiMo output head");
+    if (weights_have_output_head(w)) {
+        tensor_expect_layout(w->output_norm, DS4_TENSOR_F32, 1, DS4_N_EMBD, 0, 0);
+        tensor_expect_mimo2_dense(w->output, 2, DS4_N_EMBD, DS4_N_VOCAB);
+    }
+    if (layer_end == UINT32_MAX) layer_end = DS4_N_LAYER - 1u;
+    if (layer_start >= DS4_N_LAYER || layer_end >= DS4_N_LAYER || layer_end < layer_start)
+        ds4_die("invalid MiMo layer range");
+    if (require_output && layer_start == 0u &&
+        layer_end == DS4_N_LAYER - DS4_N_NEXTN_PREDICT - 1u)
+        layer_end = DS4_N_LAYER - 1u;
+    for (uint32_t il = layer_start; il <= layer_end; il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        if (!weights_mimo2_layer_has_required(l, il))
+            ds4_die("missing required MiMo layer tensor");
+        const uint64_t kv = ds4_layer_head_kv(il);
+        const uint64_t qkv = (uint64_t)DS4_N_HEAD * DS4_N_HEAD_DIM +
+                             kv * (DS4_N_HEAD_DIM + DS4_N_VALUE_DIM);
+        const uint64_t output = (uint64_t)DS4_N_HEAD * DS4_N_VALUE_DIM;
+        tensor_expect_layout(l->attn_norm, DS4_TENSOR_F32, 1, DS4_N_EMBD, 0, 0);
+        tensor_expect_mimo2_dense(l->attn_qkv, 2, DS4_N_EMBD, qkv);
+        tensor_expect_mimo2_dense(l->attn_output, 2, output, DS4_N_EMBD);
+        tensor_expect_layout(l->ffn_norm, DS4_TENSOR_F32, 1, DS4_N_EMBD, 0, 0);
+        if (l->attn_sinks)
+            tensor_expect_layout(l->attn_sinks, DS4_TENSOR_F32, 1, DS4_N_HEAD, 0, 0);
+        if (ds4_mimo2_layer_is_nextn(il)) {
+            tensor_expect_mimo2_dense(l->nextn_eh_proj, 2, 2u * DS4_N_EMBD, DS4_N_EMBD);
+            tensor_expect_layout(l->nextn_enorm, DS4_TENSOR_F32, 1, DS4_N_EMBD, 0, 0);
+            tensor_expect_layout(l->nextn_hnorm, DS4_TENSOR_F32, 1, DS4_N_EMBD, 0, 0);
+            tensor_expect_layout(l->layer_output_norm, DS4_TENSOR_F32, 1, DS4_N_EMBD, 0, 0);
+        }
+        if (il < DS4_N_LEADING_DENSE || ds4_mimo2_layer_is_nextn(il)) {
+            tensor_expect_mimo2_dense(l->ffn_gate, 2, DS4_N_EMBD, DS4_N_FF_DENSE);
+            tensor_expect_mimo2_dense(l->ffn_up, 2, DS4_N_EMBD, DS4_N_FF_DENSE);
+            tensor_expect_mimo2_dense(l->ffn_down, 2, DS4_N_FF_DENSE, DS4_N_EMBD);
+        } else {
+            tensor_expect_layout(l->ffn_gate_inp, DS4_TENSOR_F32, 2,
+                                 DS4_N_EMBD, DS4_N_EXPERT, 0);
+            tensor_expect_layout(l->ffn_exp_probs_b, DS4_TENSOR_F32, 1,
+                                 DS4_N_EXPERT, 0, 0);
+            const ds4_tensor *exp[3] = {l->ffn_gate_exps, l->ffn_up_exps,
+                                       l->ffn_down_exps};
+            for (uint32_t j = 0; j < 3; j++) {
+                if (!tensor_is_routed_expert_type(exp[j]->type))
+                    ds4_die("unsupported MiMo routed expert type");
+                tensor_expect_layout(exp[j], exp[j]->type, 3,
+                                     j == 2 ? DS4_N_FF_EXP : DS4_N_EMBD,
+                                     j == 2 ? DS4_N_EMBD : DS4_N_FF_EXP,
+                                     DS4_N_EXPERT);
+            }
+        }
+    }
+}
+
 static bool weights_layer_has_required(const ds4_layer_weights *l, uint32_t il) {
     if (!l) return false;
+    if (ds4_model_is_mimo2()) return weights_mimo2_layer_has_required(l, il);
     if (ds4_model_is_qwen4()) {
         return weights_qwen4_layer_has_required(l, il);
     }
@@ -5886,6 +6073,11 @@ static void weights_validate_layout(
         uint32_t           layer_end,
         bool               require_token_embd,
         bool               require_output) {
+    if (ds4_model_is_mimo2()) {
+        weights_validate_mimo2_layout(w, layer_start, layer_end,
+                                      require_token_embd, require_output);
+        return;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
         weights_validate_glm_dsa_layout(w,
                                         layer_start,
@@ -7147,10 +7339,107 @@ static void config_validate_qwen4_model(const ds4_model *m) {
     }
 }
 
+static void config_validate_mimo26_model(const ds4_model *m) {
+    const uint32_t embd = required_u32(m, "mimo2.embedding_length");
+    if (embd == DS4_SHAPE_MIMO26_FLASH.n_embd) {
+        g_ds4_shape = DS4_SHAPE_MIMO26_FLASH;
+    } else if (embd == DS4_SHAPE_MIMO26_MINI.n_embd) {
+        g_ds4_shape = DS4_SHAPE_MIMO26_MINI;
+    } else {
+        fprintf(stderr, "ds4: unsupported mimo2 embedding_length %u\n", embd);
+        exit(1);
+    }
+    memset(g_ds4_compress_ratios, 0, sizeof(g_ds4_compress_ratios));
+    memset(g_ds4_layer_is_swa, 0, sizeof(g_ds4_layer_is_swa));
+    memset(g_ds4_layer_head_kv, 0, sizeof(g_ds4_layer_head_kv));
+
+    const struct { const char *key; uint32_t expected; } ints[] = {
+        {"block_count", DS4_N_LAYER},
+        {"embedding_length", DS4_N_EMBD},
+        {"attention.head_count", DS4_N_HEAD},
+        {"attention.value_length", DS4_N_VALUE_DIM},
+        {"attention.sliding_window", DS4_N_SWA},
+        {"rope.dimension_count", DS4_N_ROT},
+        {"expert_count", DS4_N_EXPERT},
+        {"expert_used_count", DS4_N_EXPERT_USED},
+        {"expert_feed_forward_length", DS4_N_FF_EXP},
+        {"feed_forward_length", DS4_N_FF_DENSE},
+        {"nextn_predict_layers", DS4_N_NEXTN_PREDICT},
+        {"expert_gating_func", 2},
+    };
+    for (size_t i = 0; i < sizeof(ints) / sizeof(ints[0]); i++) {
+        char key[128];
+        snprintf(key, sizeof(key), "mimo2.%s", ints[i].key);
+        config_expect_u32(ints[i].key, required_u32(m, key), ints[i].expected);
+    }
+    config_expect_u64("context_length", required_u64_compat(m, "mimo2.context_length"),
+                      DS4_ROPE_ORIG_CTX);
+    uint32_t key_length = 0;
+    if (!model_get_u32(m, "mimo2.attention.key_length", &key_length)) {
+        ds4_tensor *qkv = required_tensor(m, "blk.0.attn_qkv.weight");
+        const uint64_t v_width = (uint64_t)DS4_N_HEAD_KV * DS4_N_VALUE_DIM;
+        if (qkv->ndim != 2 || qkv->dim[0] != DS4_N_EMBD ||
+            qkv->dim[1] <= v_width ||
+            (qkv->dim[1] - v_width) % (DS4_N_HEAD + DS4_N_HEAD_KV))
+            ds4_die("mimo2.attention.key_length missing and attn_qkv shape is invalid");
+        key_length = (uint32_t)((qkv->dim[1] - v_width) / (DS4_N_HEAD + DS4_N_HEAD_KV));
+    }
+    config_expect_u32("attention.key_length", key_length, DS4_N_HEAD_DIM);
+    uint32_t leading = 0;
+    if (model_get_u32(m, "mimo2.leading_dense_block_count", &leading))
+        config_expect_u32("leading_dense_block_count", leading, DS4_N_LEADING_DENSE);
+    config_expect_epsilon("attention.layer_norm_rms_epsilon",
+                          required_f32(m, "mimo2.attention.layer_norm_rms_epsilon"), DS4_RMS_EPS);
+    config_expect_f32("rope.freq_base", required_f32(m, "mimo2.rope.freq_base"),
+                      DS4_ROPE_FREQ_BASE);
+    config_expect_f32("rope.freq_base_swa", required_f32(m, "mimo2.rope.freq_base_swa"),
+                      DS4_ROPE_FREQ_BASE_SWA);
+    const float value_scale = required_f32(m, "mimo2.attention.value_scale");
+    if (value_scale != DS4_ATTN_VALUE_SCALE)
+        ds4_die("ds4 supports MiMo V2.6 value scale 0.707 only");
+
+    ds4_array_ref tokens;
+    if (!model_get_array(m, "tokenizer.ggml.tokens", &tokens) ||
+        tokens.type != GGUF_VALUE_STRING || tokens.len != DS4_N_VOCAB)
+        ds4_die("mimo2 tokenizer vocabulary length is unsupported");
+    ds4_array_ref pattern, heads;
+    if (!model_get_array(m, "mimo2.attention.sliding_window_pattern", &pattern) ||
+        pattern.type != GGUF_VALUE_UINT32 || pattern.len != DS4_N_LAYER ||
+        !model_get_array(m, "mimo2.attention.head_count_kv", &heads) ||
+        heads.type != GGUF_VALUE_UINT32 || heads.len != DS4_N_LAYER)
+        ds4_die("mimo2 attention arrays must be uint32 with one entry per layer");
+    ds4_cursor p = cursor_at(m, pattern.data_pos);
+    ds4_cursor h = cursor_at(m, heads.data_pos);
+    uint32_t n_global = 0;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        uint32_t swa = 0, kv = 0;
+        if (!cursor_u32(&p, &swa) || !cursor_u32(&h, &kv))
+            ds4_die("mimo2 attention arrays are truncated");
+        const bool global = DS4_N_EMBD == DS4_SHAPE_MIMO26_MINI.n_embd ?
+                            il == 0u || il == 5u :
+                            il == 0u || (il >= 5u && il <= 47u && (il - 5u) % 6u == 0u);
+        const uint32_t expected_swa = !global;
+        const uint32_t expected_kv = global ? DS4_N_HEAD_KV : DS4_N_HEAD_KV_SWA;
+        if (swa != expected_swa || kv != expected_kv) {
+            fprintf(stderr, "ds4: unsupported mimo2 attention at layer %u (pattern %u, kv %u)\n",
+                    il, swa, kv);
+            exit(1);
+        }
+        n_global += global;
+        g_ds4_layer_is_swa[il] = (uint8_t)swa;
+        g_ds4_layer_head_kv[il] = kv;
+    }
+    config_expect_u32("global layer count", n_global, g_ds4_shape.n_global_layers);
+}
+
 static void config_validate_model(const ds4_model *m) {
     g_ds4_flash_vision_exp = false;
     ds4_str arch = {0};
     if (model_get_string(m, "general.architecture", &arch)) {
+        if (ds4_streq(arch, "mimo2")) {
+            config_validate_mimo26_model(m);
+            return;
+        }
         if (ds4_streq(arch, "deepseek41")) {
             config_validate_deepseek41_model(m);
             return;
@@ -7656,7 +7945,7 @@ static void weights_bind_output(
             w->output         = model_find_tensor(m, "output.weight");
         }
     } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41 || ds4_model_is_mimo2()) {
 
         if (required) {
             w->output_norm = required_tensor(m, "output_norm.weight");
@@ -7819,7 +8108,36 @@ static void weights_bind_qwen4_layer(ds4_layer_weights *l, const ds4_model *m, u
     }
 }
 
+static void weights_bind_mimo2_layer(ds4_layer_weights *l, const ds4_model *m, uint32_t il) {
+    l->attn_norm = required_tensorf(m, "blk.%u.attn_norm.weight", il);
+    l->attn_qkv = required_tensorf(m, "blk.%u.attn_qkv.weight", il);
+    l->attn_output = required_tensorf(m, "blk.%u.attn_output.weight", il);
+    l->attn_sinks = tensor_by_namef(m, "blk.%u.attn_sinks.weight", il);
+    l->ffn_norm = required_tensorf(m, "blk.%u.ffn_norm.weight", il);
+    if (ds4_mimo2_layer_is_nextn(il)) {
+        l->nextn_eh_proj = required_tensorf(m, "blk.%u.nextn.eh_proj.weight", il);
+        l->nextn_enorm = required_tensorf(m, "blk.%u.nextn.enorm.weight", il);
+        l->nextn_hnorm = required_tensorf(m, "blk.%u.nextn.hnorm.weight", il);
+        l->layer_output_norm = required_tensorf(m, "blk.%u.layer_output_norm.weight", il);
+    }
+    if (il < DS4_N_LEADING_DENSE || ds4_mimo2_layer_is_nextn(il)) {
+        l->ffn_gate = required_tensorf(m, "blk.%u.ffn_gate.weight", il);
+        l->ffn_up = required_tensorf(m, "blk.%u.ffn_up.weight", il);
+        l->ffn_down = required_tensorf(m, "blk.%u.ffn_down.weight", il);
+    } else {
+        l->ffn_gate_inp = required_tensorf(m, "blk.%u.ffn_gate_inp.weight", il);
+        l->ffn_exp_probs_b = required_tensorf(m, "blk.%u.exp_probs_b.bias", il);
+        l->ffn_gate_exps = required_tensorf(m, "blk.%u.ffn_gate_exps.weight", il);
+        l->ffn_up_exps = required_tensorf(m, "blk.%u.ffn_up_exps.weight", il);
+        l->ffn_down_exps = required_tensorf(m, "blk.%u.ffn_down_exps.weight", il);
+    }
+}
+
 static void weights_bind_layer(ds4_layer_weights *l, const ds4_model *m, uint32_t il) {
+    if (ds4_model_is_mimo2()) {
+        weights_bind_mimo2_layer(l, m, il);
+        return;
+    }
     if (ds4_model_is_qwen4()) {
         weights_bind_qwen4_layer(l, m, il);
         return;
@@ -7908,7 +8226,8 @@ static void weights_bind(
     memset(w, 0, sizeof(*w));
 
     uint32_t executable_layers = DS4_N_LAYER;
-    if ((DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA || ds4_model_is_qwen4()) &&
+    if ((DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA || ds4_model_is_qwen4() ||
+         ds4_model_is_mimo2()) &&
         DS4_N_LAYER > DS4_N_NEXTN_PREDICT) {
         executable_layers = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
     }
@@ -7942,7 +8261,8 @@ static void weights_bind(
     /* GLM nextn/MTP block(s): excluded from the executable pass but bound
      * so the drafter can run them. Only when the full model is loaded. */
     if (!load_slice &&
-        (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA || ds4_model_is_qwen4()) &&
+        (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA || ds4_model_is_qwen4() ||
+         ds4_model_is_mimo2()) &&
         start == 0 && end == executable_layers - 1u) {
         for (uint32_t il = executable_layers; il < DS4_N_LAYER; il++) {
             weights_bind_layer(&w->layer[il], m, il);
@@ -8040,6 +8360,7 @@ static void model_map_span_vec_include_layer(ds4_model_map_span_vec *spans, cons
     DS4_INCLUDE_TENSOR(l->hc_attn_scale);
     DS4_INCLUDE_TENSOR(l->hc_attn_base);
     DS4_INCLUDE_TENSOR(l->attn_norm);
+    DS4_INCLUDE_TENSOR(l->attn_qkv);
     DS4_INCLUDE_TENSOR(l->attn_q_a);
     DS4_INCLUDE_TENSOR(l->attn_q_a_norm);
     DS4_INCLUDE_TENSOR(l->attn_q_b);
@@ -8084,6 +8405,7 @@ static void model_map_span_vec_include_layer(ds4_model_map_span_vec *spans, cons
     DS4_INCLUDE_TENSOR(l->hc_ffn_scale);
     DS4_INCLUDE_TENSOR(l->hc_ffn_base);
     DS4_INCLUDE_TENSOR(l->ffn_norm);
+    DS4_INCLUDE_TENSOR(l->layer_output_norm);
     DS4_INCLUDE_TENSOR(l->ffn_gate_tid2eid);
     DS4_INCLUDE_TENSOR(l->ffn_gate);
     DS4_INCLUDE_TENSOR(l->ffn_up);
@@ -8148,6 +8470,7 @@ static void model_map_span_vec_include_layer_decode_static(ds4_model_map_span_ve
     DS4_INCLUDE_TENSOR(l->hc_attn_scale);
     DS4_INCLUDE_TENSOR(l->hc_attn_base);
     DS4_INCLUDE_TENSOR(l->attn_norm);
+    DS4_INCLUDE_TENSOR(l->attn_qkv);
     DS4_INCLUDE_TENSOR(l->attn_q_a);
     DS4_INCLUDE_TENSOR(l->attn_q_a_norm);
     DS4_INCLUDE_TENSOR(l->attn_q_b);
@@ -8192,6 +8515,7 @@ static void model_map_span_vec_include_layer_decode_static(ds4_model_map_span_ve
     DS4_INCLUDE_TENSOR(l->hc_ffn_scale);
     DS4_INCLUDE_TENSOR(l->hc_ffn_base);
     DS4_INCLUDE_TENSOR(l->ffn_norm);
+    DS4_INCLUDE_TENSOR(l->layer_output_norm);
     DS4_INCLUDE_TENSOR(l->ffn_gate_tid2eid);
     DS4_INCLUDE_TENSOR(l->ffn_gate);
     DS4_INCLUDE_TENSOR(l->ffn_up);
@@ -39646,6 +39970,30 @@ ds4_context_memory ds4_context_memory_estimate_with_prefill_mode(
         bool        ssd_streaming) {
     ds4_context_memory m = {0};
     uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 1u;
+    if (ds4_backend_uses_graph(backend) && ds4_model_is_mimo2()) {
+        const uint64_t T = ctx < 2048u ? ctx : 2048u;
+        const uint64_t E = DS4_N_EMBD, H = DS4_N_HEAD, D = DS4_N_HEAD_DIM;
+        const uint64_t V = DS4_N_VALUE_DIM, N = DS4_N_EXPERT, U = DS4_N_EXPERT_USED;
+        const uint64_t kv_max = DS4_N_HEAD_KV > DS4_N_HEAD_KV_SWA ?
+                                DS4_N_HEAD_KV : DS4_N_HEAD_KV_SWA;
+        const uint64_t q = H * D, k = kv_max * D, v = kv_max * V;
+        const uint64_t routed = U * DS4_N_FF_EXP;
+        const uint64_t mid = routed > DS4_N_FF_DENSE ? routed : DS4_N_FF_DENSE;
+        m.prefill_cap = (uint32_t)T;
+        m.raw_cap = ctx;
+        m.comp_cap = 3;
+        for (uint32_t il = 0; il < DS4_N_LAYER - DS4_N_NEXTN_PREDICT; il++) {
+            const uint64_t rows = ds4_mimo2_layer_is_swa(il) && ctx > DS4_N_SWA ?
+                                  DS4_N_SWA : ctx;
+            m.raw_bytes += rows * ds4_layer_head_kv(il) * (D + V) * sizeof(uint16_t);
+        }
+        m.scratch_bytes = T * (1u + 7u * E + (q + k + v) + q + k + v + H * V +
+                               2u * DS4_N_FF_DENSE + mid + U * E +
+                               N + 2u * N + 2u * U) * sizeof(float);
+        m.scratch_bytes += (N + E + DS4_N_VOCAB) * sizeof(float);
+        m.total_bytes = m.raw_bytes + m.scratch_bytes;
+        return m;
+    }
     if (ds4_backend_uses_graph(backend) && ds4_model_is_qwen4()) {
         /* per-token f16 K/V and raw indexer keys per attention layer, pooled
          * block keys, rope positions; transients scale with the prefill chunk */
@@ -42233,6 +42581,187 @@ typedef enum {
     DS4_VISION_QWEN4,
 } ds4_vision_kind;
 
+/* ------------------------------------------------------------------------
+ * DFlash block-drafter sidecar (--dflash), trained against MiMo V2.6 Flash
+ * (models/.../dflash, dflash.py).  A 5-layer non-causal Qwen3-style decoder:
+ * the target's hidden rows after dflash.target_layers, concatenated per
+ * token, go through fc + hidden_norm and become every layer's context K/V;
+ * a block of block_size rows (the verified anchor token's target embedding,
+ * then the learned mask embedding) attends over that context and itself and
+ * the target output head turns rows 1.. into parallel drafts.
+ * general.architecture = dflash, dflash.decoder_arch = mimo2.  Linear
+ * weights Q8_0 (F16 accepted); norms, sinks and the mask embedding F32. */
+#define DS4_DFLASH_MAX_LAYERS 8u
+#define DS4_DFLASH_MAX_TARGETS 8u
+#define DS4_DFLASH_MAX_BLOCK 8u
+
+typedef struct {
+    ds4_tensor *attn_norm, *attn_q, *attn_k, *attn_v, *attn_output;
+    ds4_tensor *attn_q_norm, *attn_k_norm, *attn_sinks;
+    ds4_tensor *ffn_norm, *ffn_gate, *ffn_up, *ffn_down;
+} ds4_dflash_layer_weights;
+
+typedef struct {
+    uint32_t n_layer, block_size, n_target, mask_token_id;
+    uint32_t n_embd, n_ff, n_head, n_head_kv, head_dim, rope_dim, window;
+    uint32_t target_layers[DS4_DFLASH_MAX_TARGETS];
+    float value_scale, rope_base, rms_eps;
+    bool sinks;
+    ds4_tensor *fc, *hidden_norm, *output_norm, *mask_embd;
+    ds4_dflash_layer_weights layer[DS4_DFLASH_MAX_LAYERS];
+} ds4_dflash_weights;
+
+static bool dflash_get_u32(const ds4_model *m, const char *key, uint32_t *out) {
+    if (model_get_u32(m, key, out)) return true;
+    fprintf(stderr, "ds4: DFlash sidecar needs uint32 %s\n", key);
+    return false;
+}
+
+static bool dflash_get_f32(const ds4_model *m, const char *key, float *out) {
+    if (model_get_f32_compat(m, key, out) && isfinite(*out)) return true;
+    fprintf(stderr, "ds4: DFlash sidecar needs float %s\n", key);
+    return false;
+}
+
+/* Linear weights are [in, out] (ggml order); vectors are one-dimensional. */
+static ds4_tensor *dflash_bind(const ds4_model *m, const char *fmt, uint32_t layer,
+                               uint64_t d0, uint64_t d1) {
+    char name[128];
+    snprintf(name, sizeof(name), fmt, layer);
+    ds4_tensor *t = model_find_tensor(m, name);
+    if (!t) {
+        fprintf(stderr, "ds4: DFlash sidecar tensor is missing: %s\n", name);
+        return NULL;
+    }
+    const bool linear = d1 != 0;
+    const bool type_ok = linear ? (t->type == DS4_TENSOR_Q8_0 || t->type == DS4_TENSOR_F16)
+                                : t->type == DS4_TENSOR_F32;
+    const bool shape_ok = linear ? t->ndim == 2 && t->dim[0] == d0 && t->dim[1] == d1
+                                 : t->ndim == 1 && t->dim[0] == d0;
+    if (!type_ok || !shape_ok || t->abs_offset > m->size || t->bytes > m->size - t->abs_offset) {
+        fprintf(stderr, "ds4: DFlash sidecar tensor %s is %s [%" PRIu64 ", %" PRIu64 "], expected %s "
+                        "[%" PRIu64 ", %" PRIu64 "]\n",
+                name, tensor_type_name(t->type), t->dim[0], t->ndim > 1 ? t->dim[1] : 0,
+                linear ? "q8_0/f16" : "f32", d0, d1);
+        return NULL;
+    }
+    return t;
+}
+
+/* Binds and checks the sidecar against the loaded MiMo target: the hidden
+ * width, vocabulary and the captured target layers must match it. */
+static bool dflash_weights_load(ds4_dflash_weights *d, const ds4_model *m,
+                                uint32_t target_trunk_layers) {
+    memset(d, 0, sizeof(*d));
+    ds4_str s = {0};
+    if (!model_get_string(m, "general.architecture", &s) || !ds4_streq(s, "dflash")) {
+        fprintf(stderr, "ds4: --dflash expects a GGUF with general.architecture = dflash\n");
+        return false;
+    }
+    if (!model_get_string(m, "dflash.decoder_arch", &s) || !ds4_streq(s, "mimo2")) {
+        fprintf(stderr, "ds4: this DFlash sidecar was not trained for MiMo (dflash.decoder_arch != mimo2)\n");
+        return false;
+    }
+    uint32_t key_len = 0, value_len = 0, vocab = 0;
+    bool causal = false;
+    if (!dflash_get_u32(m, "dflash.block_count", &d->n_layer) ||
+        !dflash_get_u32(m, "dflash.block_size", &d->block_size) ||
+        !dflash_get_u32(m, "dflash.embedding_length", &d->n_embd) ||
+        !dflash_get_u32(m, "dflash.feed_forward_length", &d->n_ff) ||
+        !dflash_get_u32(m, "dflash.mask_token_id", &d->mask_token_id) ||
+        !dflash_get_u32(m, "dflash.attention.head_count", &d->n_head) ||
+        !dflash_get_u32(m, "dflash.attention.head_count_kv", &d->n_head_kv) ||
+        !dflash_get_u32(m, "dflash.attention.key_length", &key_len) ||
+        !dflash_get_u32(m, "dflash.attention.value_length", &value_len) ||
+        !dflash_get_u32(m, "dflash.attention.sliding_window", &d->window) ||
+        !dflash_get_u32(m, "dflash.rope.dimension_count", &d->rope_dim) ||
+        !dflash_get_f32(m, "dflash.rope.freq_base", &d->rope_base) ||
+        !dflash_get_f32(m, "dflash.attention.value_scale", &d->value_scale)) {
+        return false;
+    }
+    d->rms_eps = 1e-6f;
+    if (model_find_kv(m, "dflash.attention.layer_norm_rms_epsilon") &&
+        !dflash_get_f32(m, "dflash.attention.layer_norm_rms_epsilon", &d->rms_eps)) return false;
+    if (model_find_kv(m, "dflash.attention.sinks") &&
+        !model_get_bool(m, "dflash.attention.sinks", &d->sinks)) {
+        fprintf(stderr, "ds4: DFlash sidecar dflash.attention.sinks must be a bool\n");
+        return false;
+    }
+    if (model_get_bool(m, "dflash.attention.causal", &causal) && causal) {
+        fprintf(stderr, "ds4: DFlash drafts attend non-causally within a block; causal sidecars are unsupported\n");
+        return false;
+    }
+    if (model_get_u32(m, "dflash.vocab_size", &vocab) && vocab != DS4_N_VOCAB) {
+        fprintf(stderr, "ds4: DFlash sidecar vocabulary %u does not match the target's %u\n",
+                vocab, (uint32_t)DS4_N_VOCAB);
+        return false;
+    }
+    ds4_array_ref arr = {0};
+    const char *const target_key[] = { "dflash.target_layers" };
+    if (!model_get_array(m, target_key[0], &arr) || arr.len == 0 || arr.len > DS4_DFLASH_MAX_TARGETS ||
+        !model_get_u32_array_any(m, target_key, 1, d->target_layers, DS4_DFLASH_MAX_TARGETS, &d->n_target) ||
+        d->n_target != arr.len) {
+        fprintf(stderr, "ds4: DFlash sidecar needs dflash.target_layers (1..%u uint32 layer ids)\n",
+                DS4_DFLASH_MAX_TARGETS);
+        return false;
+    }
+    for (uint32_t i = 0; i < d->n_target; i++) {
+        if (d->target_layers[i] >= target_trunk_layers) {
+            fprintf(stderr, "ds4: DFlash target layer %u is outside the target's %u layers\n",
+                    d->target_layers[i], target_trunk_layers);
+            return false;
+        }
+        for (uint32_t j = 0; j < i; j++) {
+            if (d->target_layers[j] == d->target_layers[i]) {
+                fprintf(stderr, "ds4: DFlash target layer %u is listed twice\n", d->target_layers[i]);
+                return false;
+            }
+        }
+    }
+    d->head_dim = key_len;
+    if (d->n_layer == 0 || d->n_layer > DS4_DFLASH_MAX_LAYERS ||
+        d->block_size < 2 || d->block_size > DS4_DFLASH_MAX_BLOCK ||
+        d->n_embd != DS4_N_EMBD || d->mask_token_id >= DS4_N_VOCAB ||
+        d->n_ff == 0 || (d->n_ff % 32u) != 0 ||
+        d->n_head == 0 || d->n_head_kv == 0 || d->n_head % d->n_head_kv != 0 ||
+        key_len != value_len || key_len == 0 || key_len > 256u || (key_len % 32u) != 0 ||
+        d->rope_dim == 0 || (d->rope_dim & 1u) || d->rope_dim > key_len || d->rope_dim > 128u ||
+        !(d->rope_base > 0.0f) || !(d->value_scale > 0.0f) || !(d->rms_eps > 0.0f) ||
+        d->window == 0 || d->window + d->block_size > 2049u) {
+        fprintf(stderr, "ds4: DFlash sidecar shape is unsupported (layers %u block %u embd %u ff %u heads %u/%u "
+                        "head dim %u/%u rope %u window %u mask %u)\n",
+                d->n_layer, d->block_size, d->n_embd, d->n_ff, d->n_head, d->n_head_kv,
+                key_len, value_len, d->rope_dim, d->window, d->mask_token_id);
+        return false;
+    }
+    const uint64_t E = d->n_embd, FF = d->n_ff, D = d->head_dim;
+    const uint64_t qd = (uint64_t)d->n_head * D, kvd = (uint64_t)d->n_head_kv * D;
+    d->fc = dflash_bind(m, "dflash.fc.weight", 0, (uint64_t)d->n_target * E, E);
+    d->hidden_norm = dflash_bind(m, "dflash.hidden_norm.weight", 0, E, 0);
+    d->output_norm = dflash_bind(m, "dflash.output_norm.weight", 0, E, 0);
+    d->mask_embd = dflash_bind(m, "dflash.mask_embd.weight", 0, E, 0);
+    bool ok = d->fc && d->hidden_norm && d->output_norm && d->mask_embd;
+    for (uint32_t il = 0; ok && il < d->n_layer; il++) {
+        ds4_dflash_layer_weights *l = &d->layer[il];
+        l->attn_norm = dflash_bind(m, "dflash.blk.%u.attn_norm.weight", il, E, 0);
+        l->attn_q = dflash_bind(m, "dflash.blk.%u.attn_q.weight", il, E, qd);
+        l->attn_k = dflash_bind(m, "dflash.blk.%u.attn_k.weight", il, E, kvd);
+        l->attn_v = dflash_bind(m, "dflash.blk.%u.attn_v.weight", il, E, kvd);
+        l->attn_output = dflash_bind(m, "dflash.blk.%u.attn_output.weight", il, qd, E);
+        l->attn_q_norm = dflash_bind(m, "dflash.blk.%u.attn_q_norm.weight", il, D, 0);
+        l->attn_k_norm = dflash_bind(m, "dflash.blk.%u.attn_k_norm.weight", il, D, 0);
+        l->attn_sinks = d->sinks ? dflash_bind(m, "dflash.blk.%u.attn_sinks.weight", il, d->n_head, 0) : NULL;
+        l->ffn_norm = dflash_bind(m, "dflash.blk.%u.ffn_norm.weight", il, E, 0);
+        l->ffn_gate = dflash_bind(m, "dflash.blk.%u.ffn_gate.weight", il, E, FF);
+        l->ffn_up = dflash_bind(m, "dflash.blk.%u.ffn_up.weight", il, E, FF);
+        l->ffn_down = dflash_bind(m, "dflash.blk.%u.ffn_down.weight", il, FF, E);
+        ok = l->attn_norm && l->attn_q && l->attn_k && l->attn_v && l->attn_output &&
+             l->attn_q_norm && l->attn_k_norm && (!d->sinks || l->attn_sinks) &&
+             l->ffn_norm && l->ffn_gate && l->ffn_up && l->ffn_down;
+    }
+    return ok;
+}
+
 struct ds4_engine {
     char *model_path;
     uint64_t ds41_session_bytes;
@@ -42279,6 +42808,13 @@ struct ds4_engine {
     bool quality;
     bool glm_mtp;
     bool glm_mtp_timing;
+    uint32_t mimo2_mtp_depth;  /* MiMo native MTP drafts per cycle (0 = off) */
+    /* MiMo DFlash block drafter (--dflash). */
+    ds4_model dflash_model;
+    ds4_dflash_weights dflash;
+    bool dflash_ready;
+    uint32_t dflash_draft_tokens;  /* drafts per block, 1 .. block_size - 1 */
+    float dflash_p_min;            /* stop before a draft below this probability */
     bool dspark;
     bool dspark_strict;
     bool dspark_exact_sampling;
@@ -43063,7 +43599,7 @@ static qwen4_char_info qwen4_char_at(const char *s, uint64_t len, uint64_t pos) 
     c.valid = true;
     c.cp = utf8_peek_one(s, len, pos, &c.next);
     c.letter = DS4_QWEN4_CLASS(letter, c.cp);
-    c.mark = DS4_QWEN4_CLASS(mark, c.cp);
+    c.mark = DS4_QWEN4_CLASS(mark, c.cp) && !ds4_model_is_mimo2();
     c.number = DS4_QWEN4_CLASS(number, c.cp);
     c.space = DS4_QWEN4_CLASS(space, c.cp);
     return c;
@@ -43201,9 +43737,42 @@ static void bpe_tokenize_text_qwen35(const ds4_vocab *vocab, const char *text, t
  * word (for example ">;\n").  Splitting those newlines separately changes the
  * token stream for code prompts and produces wrong long-context logits.
  */
+static void bpe_tokenize_text_mimo2(const ds4_vocab *vocab, const char *text,
+                                    token_vec *out) {
+    const uint8_t *p = (const uint8_t *)text;
+    while (*p && *p < 0x80u) p++;
+    if (!*p) {
+        bpe_tokenize_text_qwen35(vocab, text, out);
+        return;
+    }
+#if defined(__APPLE__)
+    CFStringRef raw = CFStringCreateWithBytes(kCFAllocatorDefault,
+        (const UInt8 *)text, (CFIndex)strlen(text), kCFStringEncodingUTF8, false);
+    if (!raw) ds4_die("MiMo tokenizer requires valid UTF-8");
+    CFMutableStringRef normalized = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, raw);
+    CFRelease(raw);
+    if (!normalized) ds4_die("MiMo tokenizer NFC allocation failed");
+    CFStringNormalize(normalized, kCFStringNormalizationFormC);
+    CFIndex cap = CFStringGetMaximumSizeForEncoding(CFStringGetLength(normalized),
+                                                    kCFStringEncodingUTF8) + 1;
+    char *utf8 = xmalloc((size_t)cap);
+    if (!CFStringGetCString(normalized, utf8, cap, kCFStringEncodingUTF8))
+        ds4_die("MiMo tokenizer NFC encoding failed");
+    CFRelease(normalized);
+    bpe_tokenize_text_qwen35(vocab, utf8, out);
+    free(utf8);
+#else
+    ds4_die("MiMo tokenizer NFC requires Metal on macOS");
+#endif
+}
+
 static void bpe_tokenize_text(const ds4_vocab *vocab, const char *text, token_vec *out) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
         bpe_tokenize_text_glm4(vocab, text, out);
+        return;
+    }
+    if (ds4_model_is_mimo2()) {
+        bpe_tokenize_text_mimo2(vocab, text, out);
         return;
     }
     if (ds4_model_is_qwen4()) {
@@ -43333,7 +43902,7 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
     vocab->im_end_id = -1;
     vocab->endoftext_id = -1;
 
-    if (ds4_model_is_qwen4()) {
+    if (ds4_model_is_qwen4() || ds4_model_is_mimo2()) {
         /* ChatML without BOS; <|endoftext|> is the document separator and a
          * second generation stop. */
         vocab->im_start_id = vocab_lookup(vocab, "<|im_start|>");
@@ -43460,7 +44029,7 @@ static void chat_push_think_prefix(const ds4_vocab *vocab,
             token_vec_push(out, vocab->system_id);
             bpe_tokenize_text(vocab, effort, out);
         }
-    } else if (think_mode == DS4_THINK_MAX) {
+    } else if (think_mode == DS4_THINK_MAX && !ds4_model_is_mimo2()) {
         bpe_tokenize_text(vocab, DS4_REASONING_EFFORT_MAX_PREFIX, out);
     }
 }
@@ -43513,12 +44082,37 @@ static void qwen4_chat_system(const ds4_vocab *vocab, const char *system, ds4_th
     qwen4_chat_close(vocab, out);
 }
 
+static void mimo2_chat_close(const ds4_vocab *vocab, token_vec *out) {
+    token_vec_push(out, vocab->im_end_id);
+}
+
+static void mimo2_chat_assistant_prefix(const ds4_vocab *vocab,
+                                        ds4_think_mode think_mode, token_vec *out) {
+    qwen4_chat_open(vocab, "assistant", out);
+    if (!ds4_think_mode_enabled(think_mode)) {
+        token_vec_push(out, vocab->think_start_id);
+        token_vec_push(out, vocab->think_end_id);
+    }
+}
+
 static void encode_chat_prompt(
         const ds4_vocab *vocab,
         const char      *system,
         const char      *prompt,
         ds4_think_mode   think_mode,
         token_vec       *out) {
+    if (ds4_model_is_mimo2()) {
+        if (system && system[0]) {
+            qwen4_chat_open(vocab, "system", out);
+            bpe_tokenize_text(vocab, system, out);
+            mimo2_chat_close(vocab, out);
+        }
+        qwen4_chat_open(vocab, "user", out);
+        bpe_tokenize_text(vocab, prompt, out);
+        mimo2_chat_close(vocab, out);
+        mimo2_chat_assistant_prefix(vocab, think_mode, out);
+        return;
+    }
     if (ds4_model_is_qwen4()) {
         if (vocab->im_start_id < 0 || vocab->im_end_id < 0 ||
             vocab->think_start_id < 0 || vocab->think_end_id < 0) {
@@ -43716,6 +44310,24 @@ void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role
     if (!role) role = "user";
     if (!content) content = "";
 
+    if (ds4_model_is_mimo2()) {
+        const char *name = (!strcmp(role, "tool") || !strcmp(role, "function")) ? "tool" :
+                           (!strcmp(role, "system") || !strcmp(role, "developer")) ? "system" :
+                           !strcmp(role, "assistant") ? "assistant" : "user";
+        qwen4_chat_open(vocab, name, tokens);
+        if (!strcmp(name, "assistant")) {
+            if (strncmp(content, "<think>", 7) != 0) {
+                token_vec_push(tokens, vocab->think_start_id);
+                token_vec_push(tokens, vocab->think_end_id);
+            }
+            tokenize_rendered_chat_vocab(vocab, content, tokens);
+        } else {
+            bpe_tokenize_text(vocab, content, tokens);
+        }
+        mimo2_chat_close(vocab, tokens);
+        return;
+    }
+
     if (ds4_model_is_qwen4()) {
         if (!strcmp(role, "tool") || !strcmp(role, "function")) {
             qwen4_chat_open(vocab, "user", tokens);
@@ -43782,6 +44394,10 @@ void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role
 }
 
 void ds4_chat_append_assistant_prefix(ds4_engine *e, ds4_tokens *tokens, ds4_think_mode think_mode) {
+    if (ds4_model_is_mimo2()) {
+        mimo2_chat_assistant_prefix(&e->vocab, think_mode, tokens);
+        return;
+    }
     if (ds4_model_is_qwen4()) {
         qwen4_chat_assistant_prefix(&e->vocab, think_mode, tokens);
         return;
@@ -57542,6 +58158,1240 @@ static const ds4_vision_span *qwen4_fake_spans(size_t *count) {
     *count = n;
     return spans;
 }
+#ifdef DS4_HAS_MIMO2_METAL
+/* ------------------------------------------------------------------------
+ * MiMo V2.6 Flash Metal graph.  One command batch per forward over T rows
+ * (T == 1 for decode, up to prefill_cap for prefill), f32 activations.
+ *
+ * K/V caches are f16 rings per trunk layer indexed by absolute position
+ * modulo cache_cap.  Global layers keep the whole context and store a chunk's
+ * rows before attending.  Sliding-window layers keep DS4_N_SWA rows: a chunk
+ * stages its K/V, attends over the ring's earlier rows plus the staged rows,
+ * then commits its last DS4_N_SWA rows to the ring.  The forward runs the
+ * trunk layers only.  The nextn blocks are the native MTP draft stack: each
+ * depth owns a DS4_N_SWA ring (key_cache[il] for il >= n_trunk_layers,
+ * allocated on first use) indexed by a per-depth position that the session
+ * restarts at 0, so its attention never reads a row it did not write. */
+/* Verification rows: the fed token plus up to seven drafts (a DFlash block
+ * of eight; native MTP uses at most four). */
+#define MIMO2_SPEC_MAX_ROWS DS4_DFLASH_MAX_BLOCK
+
+/* DFlash drafter state (--dflash), allocated per session.  Every trunk
+ * forward copies the residual rows after the sidecar's target layers into
+ * features ([rows][n_target][n_embd], the last feat_cap rows of a chunk).
+ * Committing rows runs fc + hidden_norm and each draft layer's k/v
+ * projection, k norm, RoPE and value scale into that layer's f16 ring
+ * (ring_cap = the draft window, row p % ring_cap), which then holds context
+ * K/V for positions [lo, hi).  Plain forwards commit their rows at once;
+ * verification forwards commit only the accepted prefix. */
+typedef struct {
+    const ds4_model *model;
+    const ds4_dflash_weights *w;
+    int8_t slot[DS4_MAX_LAYER];   /* feature slot of a target layer, -1 = none */
+    uint32_t feat_cap, feat_rows, feat_pos;
+    uint32_t ring_cap, lo, hi;
+    float rope_freq[64];
+    ds4_gpu_tensor *features, *ctx, *ctx_norm, *ctx_k, *ctx_v;
+    ds4_gpu_tensor *key_ring[DS4_DFLASH_MAX_LAYERS], *value_ring[DS4_DFLASH_MAX_LAYERS];
+    ds4_gpu_tensor *q_norm[DS4_DFLASH_MAX_LAYERS], *k_norm[DS4_DFLASH_MAX_LAYERS];
+    ds4_gpu_tensor *sinks[DS4_DFLASH_MAX_LAYERS];
+    /* Draft block scratch: block_size rows. */
+    ds4_gpu_tensor *mask_rows, *x, *x_attn, *h, *q, *bk, *bv, *bk16, *bv16, *heads, *o;
+    ds4_gpu_tensor *gate, *up, *mid, *ffn, *head_in, *logits, *index, *prob;
+} ds4_mimo2_dflash;
+
+typedef struct {
+    uint32_t ctx_size;
+    uint32_t prefill_cap;
+    uint32_t pos;
+    bool streaming;
+    bool streaming_cold;
+    uint32_t streaming_preload_experts;
+    uint32_t n_trunk_layers;
+    uint64_t scratch_bytes;
+    uint64_t kv_bytes;
+    ds4_imatrix_collector *imatrix;
+    ds4_gpu_tensor *directional_steering_dirs;
+    float directional_steering_attn_scale;
+    float directional_steering_ffn_scale;
+    float rope_freq_global[32];
+    float rope_freq_swa[32];
+    ds4_gpu_tensor *tokens, *cur, *next, *attn_norm;
+    ds4_gpu_tensor *qkv, *q, *k, *v, *heads, *attn_out, *after_attn;
+    ds4_gpu_tensor *ffn_norm, *ffn_gate, *ffn_up, *ffn_mid, *ffn_out;
+    ds4_gpu_tensor *moe_part, *moe_lists, *moe_counts;
+    ds4_gpu_tensor *router_logits, *router_probs;
+    ds4_gpu_tensor *router_selected, *router_weights;
+    ds4_gpu_tensor *output_norm, *logits;
+    uint64_t stream_gate_bytes, stream_down_bytes;
+    ds4_gpu_tensor *key_cache[DS4_MAX_LAYER];
+    ds4_gpu_tensor *value_cache[DS4_MAX_LAYER];
+    ds4_gpu_tensor *sinks[DS4_MAX_LAYER];
+    ds4_gpu_tensor *spec_key_backup[DS4_MAX_LAYER];
+    ds4_gpu_tensor *spec_value_backup[DS4_MAX_LAYER];
+    uint32_t cache_cap[DS4_MAX_LAYER];
+    /* MTP draft scratch (lazy): trunk hidden input, [enorm(e) | hnorm(h)],
+     * its two halves, and the draft residual. */
+    ds4_gpu_tensor *mtp_hidden, *mtp_concat, *mtp_concat_e, *mtp_concat_h, *mtp_x;
+    /* Verification scratch (lazy): one hidden row for the per-row head, the
+     * rows' logits, and per-row views for streamed routed experts. */
+    ds4_gpu_tensor *verify_row, *verify_logits;
+    ds4_gpu_tensor *verify_ffn_norm_row[MIMO2_SPEC_MAX_ROWS];
+    ds4_gpu_tensor *verify_ffn_out_row[MIMO2_SPEC_MAX_ROWS];
+    ds4_gpu_tensor *verify_selected_row[MIMO2_SPEC_MAX_ROWS];
+    ds4_gpu_tensor *verify_weights_row[MIMO2_SPEC_MAX_ROWS];
+    /* DFlash drafter (lazy, NULL unless the engine loaded a sidecar). */
+    ds4_mimo2_dflash *dflash;
+} ds4_mimo2_gpu_graph;
+
+/* Dense projections go through ds4_gpu_matmul_quant_tensor (Q8_0, Q4_K) or
+ * the F16 matmul; routed experts through the Qwen expert kernels. */
+static bool mimo2_graph_dense_ok(const ds4_tensor *t) {
+    return t && (t->type == DS4_TENSOR_Q8_0 || t->type == DS4_TENSOR_F16 ||
+                 (t->type == DS4_TENSOR_Q4_K && (t->dim[0] % 256u) == 0));
+}
+
+static bool mimo2_graph_expert_ok(const ds4_tensor *t) {
+    return t && (t->type == DS4_TENSOR_Q8_0 || t->type == DS4_TENSOR_MXFP4 ||
+                 ((t->type == DS4_TENSOR_Q4_K || t->type == DS4_TENSOR_Q2_K ||
+                   t->type == DS4_TENSOR_IQ2_XXS) && (t->dim[0] % 256u) == 0));
+}
+
+static uint32_t mimo2_graph_trunk_layers(void) {
+    return DS4_N_LAYER > DS4_N_NEXTN_PREDICT ? DS4_N_LAYER - DS4_N_NEXTN_PREDICT : 0u;
+}
+
+static bool mimo2_graph_weights_supported(const ds4_weights *w) {
+    if (!w || !w->token_embd || !w->output || !w->output_norm ||
+        (w->token_embd->type != DS4_TENSOR_Q8_0 && w->token_embd->type != DS4_TENSOR_Q4_K) ||
+        !mimo2_graph_dense_ok(w->output)) {
+        fprintf(stderr, "ds4: MiMo Metal graph needs a Q8_0/Q4_K token embedding and a Q8_0/Q4_K/F16 output head\n");
+        return false;
+    }
+    const uint32_t trunk = mimo2_graph_trunk_layers();
+    for (uint32_t il = 0; il < trunk; il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        if (!mimo2_graph_dense_ok(l->attn_qkv) || !mimo2_graph_dense_ok(l->attn_output)) {
+            fprintf(stderr, "ds4: MiMo Metal graph: unsupported attention weight type in layer %u (q8_0, q4_K, f16)\n", il);
+            return false;
+        }
+        if (ds4_mimo2_layer_is_swa(il) != (l->attn_sinks != NULL)) {
+            fprintf(stderr, "ds4: MiMo Metal graph: attention sinks do not match the layer type in layer %u\n", il);
+            return false;
+        }
+        if (il < DS4_N_LEADING_DENSE) {
+            if (!mimo2_graph_dense_ok(l->ffn_gate) || !mimo2_graph_dense_ok(l->ffn_up) ||
+                !mimo2_graph_dense_ok(l->ffn_down)) {
+                fprintf(stderr, "ds4: MiMo Metal graph: unsupported dense FFN weight type in layer %u\n", il);
+                return false;
+            }
+            continue;
+        }
+        if (!l->ffn_gate_inp || l->ffn_gate_inp->type != DS4_TENSOR_F32 ||
+            !l->ffn_exp_probs_b || l->ffn_exp_probs_b->type != DS4_TENSOR_F32) {
+            fprintf(stderr, "ds4: MiMo Metal graph: layer %u router must be F32 with an F32 selection bias\n", il);
+            return false;
+        }
+        if (!mimo2_graph_expert_ok(l->ffn_gate_exps) || !mimo2_graph_expert_ok(l->ffn_up_exps) ||
+            !mimo2_graph_expert_ok(l->ffn_down_exps) ||
+            l->ffn_gate_exps->type != l->ffn_up_exps->type) {
+            fprintf(stderr, "ds4: MiMo Metal graph: unsupported routed expert types in layer %u "
+                            "(q8_0, mxfp4, q4_K, q2_K, iq2_xxs; gate and up must match)\n", il);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The nextn blocks are checked when drafting first needs them, so a file
+ * whose draft stack the graph cannot run still serves plain decoding. */
+static bool mimo2_graph_mtp_weights_supported(const ds4_weights *w) {
+    const uint32_t trunk = mimo2_graph_trunk_layers();
+    if (DS4_N_NEXTN_PREDICT == 0 || DS4_N_NEXTN_PREDICT >= MIMO2_SPEC_MAX_ROWS) {
+        fprintf(stderr, "ds4: MiMo MTP supports 1..%u draft layers, model has %u\n",
+                MIMO2_SPEC_MAX_ROWS - 1u, (uint32_t)DS4_N_NEXTN_PREDICT);
+        return false;
+    }
+    for (uint32_t il = trunk; il < DS4_N_LAYER; il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        const ds4_tensor *norms[] = {
+            l->nextn_enorm, l->nextn_hnorm, l->layer_output_norm, l->attn_norm, l->ffn_norm,
+        };
+        for (size_t i = 0; i < sizeof(norms) / sizeof(norms[0]); i++) {
+            if (!norms[i] || norms[i]->type != DS4_TENSOR_F32 || norms[i]->dim[0] != DS4_N_EMBD) {
+                fprintf(stderr, "ds4: MiMo MTP layer %u needs F32 [%u] norms\n", il, (uint32_t)DS4_N_EMBD);
+                return false;
+            }
+        }
+        if (!mimo2_graph_dense_ok(l->nextn_eh_proj) ||
+            l->nextn_eh_proj->dim[0] != 2u * DS4_N_EMBD || l->nextn_eh_proj->dim[1] != DS4_N_EMBD ||
+            !mimo2_graph_dense_ok(l->attn_qkv) || !mimo2_graph_dense_ok(l->attn_output) ||
+            !mimo2_graph_dense_ok(l->ffn_gate) || !mimo2_graph_dense_ok(l->ffn_up) ||
+            !mimo2_graph_dense_ok(l->ffn_down)) {
+            fprintf(stderr, "ds4: MiMo MTP layer %u: unsupported projection layout (q8_0, q4_K, f16)\n", il);
+            return false;
+        }
+        if (!ds4_mimo2_layer_is_swa(il) || !l->attn_sinks ||
+            l->attn_sinks->type != DS4_TENSOR_F32 || l->attn_sinks->dim[0] != DS4_N_HEAD) {
+            fprintf(stderr, "ds4: MiMo MTP layer %u must be sliding-window attention with F32 sinks\n", il);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void mimo2_dflash_free(ds4_mimo2_gpu_graph *g) {
+    ds4_mimo2_dflash *d = g ? g->dflash : NULL;
+    if (!d) return;
+    ds4_gpu_tensor_free(d->head_in);   /* view of h */
+    ds4_gpu_tensor **t[] = {
+        &d->features, &d->ctx, &d->ctx_norm, &d->ctx_k, &d->ctx_v, &d->mask_rows,
+        &d->x, &d->x_attn, &d->h, &d->q, &d->bk, &d->bv, &d->bk16, &d->bv16,
+        &d->heads, &d->o, &d->gate, &d->up, &d->mid, &d->ffn, &d->logits,
+        &d->index, &d->prob,
+    };
+    for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) ds4_gpu_tensor_free(*t[i]);
+    for (uint32_t il = 0; il < DS4_DFLASH_MAX_LAYERS; il++) {
+        ds4_gpu_tensor_free(d->key_ring[il]);
+        ds4_gpu_tensor_free(d->value_ring[il]);
+        ds4_gpu_tensor_free(d->q_norm[il]);
+        ds4_gpu_tensor_free(d->k_norm[il]);
+        ds4_gpu_tensor_free(d->sinks[il]);
+    }
+    free(d);
+    g->dflash = NULL;
+}
+
+static void mimo2_graph_free(ds4_mimo2_gpu_graph *g) {
+    if (!g) return;
+    if (getenv("DS4_METAL_MEMORY_REPORT")) ds4_gpu_print_memory_report("MiMo graph");
+    mimo2_dflash_free(g);
+    for (uint32_t r = 0; r < MIMO2_SPEC_MAX_ROWS; r++) {
+        ds4_gpu_tensor_free(g->verify_ffn_norm_row[r]);
+        ds4_gpu_tensor_free(g->verify_ffn_out_row[r]);
+        ds4_gpu_tensor_free(g->verify_selected_row[r]);
+        ds4_gpu_tensor_free(g->verify_weights_row[r]);
+    }
+    ds4_gpu_tensor **scratch[] = {
+        &g->tokens, &g->cur, &g->next, &g->attn_norm, &g->qkv, &g->q, &g->k,
+        &g->v, &g->heads, &g->attn_out, &g->after_attn, &g->ffn_norm,
+        &g->ffn_gate, &g->ffn_up, &g->ffn_mid, &g->ffn_out, &g->moe_part,
+        &g->moe_lists, &g->moe_counts, &g->router_logits, &g->router_probs,
+        &g->router_selected, &g->router_weights, &g->output_norm, &g->logits,
+        &g->directional_steering_dirs, &g->mtp_concat_e, &g->mtp_concat_h,
+        &g->mtp_hidden, &g->mtp_concat, &g->mtp_x, &g->verify_row, &g->verify_logits,
+    };
+    for (size_t i = 0; i < sizeof(scratch) / sizeof(scratch[0]); i++)
+        ds4_gpu_tensor_free(*scratch[i]);
+    for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
+        ds4_gpu_tensor_free(g->key_cache[il]);
+        ds4_gpu_tensor_free(g->value_cache[il]);
+        ds4_gpu_tensor_free(g->sinks[il]);
+        ds4_gpu_tensor_free(g->spec_key_backup[il]);
+        ds4_gpu_tensor_free(g->spec_value_backup[il]);
+    }
+    memset(g, 0, sizeof(*g));
+}
+
+static bool mimo2_graph_alloc(ds4_mimo2_gpu_graph *g, const ds4_model *m,
+                              const ds4_weights *w, uint32_t ctx_size,
+                              bool streaming, bool cold, uint32_t preload_experts) {
+    if (!g) return false;
+    memset(g, 0, sizeof(*g));
+    if (!m || !w || !ds4_model_is_mimo2() || ctx_size == 0 ||
+        ctx_size > DS4_ROPE_ORIG_CTX || DS4_N_LAYER > DS4_MAX_LAYER ||
+        DS4_N_ROT / 2u > 32u || !mimo2_graph_weights_supported(w))
+        return false;
+    g->ctx_size = ctx_size;
+    g->prefill_cap = ctx_size < 2048u ? ctx_size : 2048u;
+    g->streaming = streaming;
+    g->streaming_cold = cold;
+    g->streaming_preload_experts = preload_experts;
+    g->n_trunk_layers = mimo2_graph_trunk_layers();
+    const uint64_t rows = g->prefill_cap, f32 = sizeof(float);
+    const uint64_t max_kv = DS4_N_HEAD_KV > DS4_N_HEAD_KV_SWA ? DS4_N_HEAD_KV : DS4_N_HEAD_KV_SWA;
+    const uint64_t q_dim = (uint64_t)DS4_N_HEAD * DS4_N_HEAD_DIM;
+    const uint64_t k_dim = max_kv * DS4_N_HEAD_DIM;
+    const uint64_t v_dim = max_kv * DS4_N_VALUE_DIM;
+    const uint64_t head_dim = (uint64_t)DS4_N_HEAD * DS4_N_VALUE_DIM;
+    const uint64_t routed = (uint64_t)DS4_N_EXPERT_USED * DS4_N_FF_EXP;
+    const uint64_t ff_dim = DS4_N_FF_DENSE > routed ? DS4_N_FF_DENSE : routed;
+    const uint32_t half_rot = DS4_N_ROT / 2u;
+    for (uint32_t i = 0; i < half_rot; i++) {
+        g->rope_freq_global[i] = (float)pow(DS4_ROPE_FREQ_BASE, -2.0 * i / DS4_N_ROT);
+        g->rope_freq_swa[i] = (float)pow(DS4_ROPE_FREQ_BASE_SWA, -2.0 * i / DS4_N_ROT);
+    }
+#define MIMO2_ALLOC(name, bytes_) do { \
+        uint64_t nbytes_ = (bytes_); \
+        g->name = ds4_gpu_tensor_alloc(nbytes_); \
+        if (!g->name) goto fail; \
+        g->scratch_bytes += nbytes_; \
+    } while (0)
+    MIMO2_ALLOC(tokens, rows * sizeof(int32_t));
+    MIMO2_ALLOC(cur, rows * DS4_N_EMBD * f32);
+    MIMO2_ALLOC(next, rows * DS4_N_EMBD * f32);
+    MIMO2_ALLOC(attn_norm, rows * DS4_N_EMBD * f32);
+    MIMO2_ALLOC(qkv, rows * (q_dim + k_dim + v_dim) * f32);
+    MIMO2_ALLOC(q, rows * q_dim * f32);
+    MIMO2_ALLOC(k, rows * k_dim * f32);
+    MIMO2_ALLOC(v, rows * v_dim * f32);
+    MIMO2_ALLOC(heads, rows * head_dim * f32);
+    MIMO2_ALLOC(attn_out, rows * DS4_N_EMBD * f32);
+    MIMO2_ALLOC(after_attn, rows * DS4_N_EMBD * f32);
+    MIMO2_ALLOC(ffn_norm, rows * DS4_N_EMBD * f32);
+    MIMO2_ALLOC(ffn_gate, rows * DS4_N_FF_DENSE * f32);
+    MIMO2_ALLOC(ffn_up, rows * DS4_N_FF_DENSE * f32);
+    MIMO2_ALLOC(ffn_mid, rows * ff_dim * f32);
+    MIMO2_ALLOC(ffn_out, rows * DS4_N_EMBD * f32);
+    MIMO2_ALLOC(moe_part, rows * DS4_N_EXPERT_USED * DS4_N_EMBD * f32);
+    MIMO2_ALLOC(moe_lists, (uint64_t)DS4_N_EXPERT * rows * sizeof(int32_t));
+    MIMO2_ALLOC(moe_counts, (uint64_t)DS4_N_EXPERT * sizeof(int32_t));
+    MIMO2_ALLOC(router_logits, rows * DS4_N_EXPERT * f32);
+    MIMO2_ALLOC(router_probs, rows * DS4_N_EXPERT * f32);
+    MIMO2_ALLOC(router_selected, rows * DS4_N_EXPERT_USED * sizeof(int32_t));
+    MIMO2_ALLOC(router_weights, rows * DS4_N_EXPERT_USED * f32);
+    MIMO2_ALLOC(output_norm, DS4_N_EMBD * f32);
+    MIMO2_ALLOC(logits, DS4_N_VOCAB * f32);
+    if (streaming) {
+        if (DS4_N_EXPERT_USED != 8u || DS4_N_EXPERT < 128u ||
+            (DS4_N_EMBD % 256u) != 0 || (DS4_N_FF_EXP % 256u) != 0 ||
+            g->n_trunk_layers <= DS4_N_LEADING_DENSE) {
+            fprintf(stderr, "ds4: MiMo SSD streaming requires the full top-eight MXFP4 shape\n");
+            goto fail;
+        }
+        for (uint32_t il = DS4_N_LEADING_DENSE; il < g->n_trunk_layers; il++) {
+            const ds4_layer_weights *l = &w->layer[il];
+            uint64_t gate_bytes = 0, down_bytes = 0;
+            if (l->ffn_gate_exps->type != DS4_TENSOR_MXFP4 ||
+                l->ffn_up_exps->type != DS4_TENSOR_MXFP4 ||
+                l->ffn_down_exps->type != DS4_TENSOR_MXFP4 ||
+                !streaming_layer_gate_down_expert_bytes(l, &gate_bytes, &down_bytes) ||
+                (il != DS4_N_LEADING_DENSE &&
+                 (gate_bytes != g->stream_gate_bytes || down_bytes != g->stream_down_bytes))) {
+                fprintf(stderr, "ds4: MiMo SSD streaming requires uniform MXFP4 experts in layer %u\n", il);
+                goto fail;
+            }
+            g->stream_gate_bytes = gate_bytes;
+            g->stream_down_bytes = down_bytes;
+        }
+        if (ds4_gpu_stream_expert_cache_budget_for_expert_size(
+                g->stream_gate_bytes, g->stream_down_bytes) < DS4_N_EXPERT_USED) {
+            fprintf(stderr, "ds4: MiMo SSD expert cache needs at least %u slots\n", DS4_N_EXPERT_USED);
+            goto fail;
+        }
+    }
+#undef MIMO2_ALLOC
+    for (uint32_t il = 0; il < g->n_trunk_layers; il++) {
+        const bool swa = ds4_mimo2_layer_is_swa(il);
+        const uint32_t cap = swa && ctx_size > DS4_N_SWA ? DS4_N_SWA : ctx_size;
+        const uint64_t kv = ds4_layer_head_kv(il);
+        const uint64_t kb = (uint64_t)cap * kv * DS4_N_HEAD_DIM * sizeof(uint16_t);
+        const uint64_t vb = (uint64_t)cap * kv * DS4_N_VALUE_DIM * sizeof(uint16_t);
+        g->key_cache[il] = ds4_gpu_tensor_alloc(kb);
+        g->value_cache[il] = ds4_gpu_tensor_alloc(vb);
+        if (!g->key_cache[il] || !g->value_cache[il]) goto fail;
+        g->cache_cap[il] = cap;
+        g->kv_bytes += kb + vb;
+        if (swa) {
+            const ds4_tensor *t = w->layer[il].attn_sinks;
+            const uint64_t sb = (uint64_t)DS4_N_HEAD * sizeof(float);
+            if (!t || t->abs_offset > m->size || sb > m->size - t->abs_offset) goto fail;
+            g->sinks[il] = ds4_gpu_tensor_alloc(sb);
+            if (!g->sinks[il] ||
+                !ds4_gpu_tensor_write(g->sinks[il], 0, (const uint8_t *)m->map + t->abs_offset, sb))
+                goto fail;
+        }
+    }
+    return true;
+fail:
+    fprintf(stderr, "ds4: MiMo Metal graph allocation failed (ctx %u)\n", ctx_size);
+    mimo2_graph_free(g);
+    return false;
+}
+
+static bool mimo2_graph_load_directional_steering(ds4_mimo2_gpu_graph *g,
+                                                   const char *path,
+                                                   float attn_scale, float ffn_scale) {
+    if (!g) return false;
+    if (!path || !path[0]) return attn_scale == 0.0f && ffn_scale == 0.0f;
+    const uint32_t layers = directional_steering_layer_count();
+    if (layers != g->n_trunk_layers) return false;
+    const uint64_t n = (uint64_t)layers * DS4_N_EMBD;
+    float *dirs = xmalloc((size_t)n * sizeof(float));
+    bool ok = read_f32_binary_file(path, dirs, n);
+    if (ok) {
+        g->directional_steering_dirs = ds4_gpu_tensor_alloc(n * sizeof(float));
+        ok = g->directional_steering_dirs != NULL &&
+             ds4_gpu_tensor_write(g->directional_steering_dirs, 0,
+                                  dirs, n * sizeof(float)) != 0;
+    }
+    free(dirs);
+    if (!ok) {
+        fprintf(stderr, "ds4: failed to load MiMo directional steering vectors from %s\n", path);
+        return false;
+    }
+    g->directional_steering_attn_scale = attn_scale;
+    g->directional_steering_ffn_scale = ffn_scale;
+    return true;
+}
+
+static bool mimo2_graph_apply_directional_steering(ds4_mimo2_gpu_graph *g,
+                                                    ds4_gpu_tensor *x, uint32_t il,
+                                                    uint32_t rows, float scale) {
+    if (scale == 0.0f) return true;
+    return g->directional_steering_dirs &&
+           ds4_gpu_directional_steering_project_tensor(x, g->directional_steering_dirs,
+                                                        il, DS4_N_EMBD, rows, scale) != 0;
+}
+
+/* The caches carry no validity state: attention reads only rows at absolute
+ * positions below pos + T, and every such row is rewritten before it is read. */
+static void mimo2_graph_reset(ds4_mimo2_gpu_graph *g) {
+    if (g) g->pos = 0;
+}
+
+static bool mimo2_graph_matmul(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w,
+                               const ds4_gpu_tensor *x, uint32_t T) {
+    if (w->type == DS4_TENSOR_F16) {
+        return ds4_gpu_matmul_f16_tensor(out, m->map, m->size, w->abs_offset,
+                                         w->dim[0], w->dim[1], x, T) != 0;
+    }
+    return ds4_gpu_matmul_quant_tensor(out, m->map, m->size, w->abs_offset, w->type,
+                                       w->dim[0], w->dim[1], x, T) != 0;
+}
+
+static bool mimo2_graph_attention(ds4_mimo2_gpu_graph *g, const ds4_model *m,
+                                  const ds4_layer_weights *l, uint32_t il,
+                                  uint32_t pos0, uint32_t T) {
+    const bool swa = ds4_mimo2_layer_is_swa(il);
+    const uint32_t kv = ds4_layer_head_kv(il);
+    const uint32_t cap = g->cache_cap[il];
+    /* A ring shorter than the context can wrap inside a chunk: stage the
+     * chunk, attend over ring + staged rows, commit afterwards.  A cache
+     * holding the whole context takes the chunk's rows directly. */
+    const bool staged = cap < g->ctx_size;
+    ds4_gpu_tensor *kc = g->key_cache[il], *vc = g->value_cache[il];
+    return mimo2_graph_matmul(g->qkv, m, l->attn_qkv, g->attn_norm, T) &&
+           ds4_gpu_mimo2_qkv_rope_cache_tensor(g->q, g->k, g->v,
+                                               staged ? NULL : kc, staged ? NULL : vc,
+                                               g->qkv, T, pos0, cap, DS4_N_HEAD, kv,
+                                               DS4_N_HEAD_DIM, DS4_N_VALUE_DIM, DS4_N_ROT,
+                                               DS4_ATTN_VALUE_SCALE,
+                                               swa ? g->rope_freq_swa : g->rope_freq_global) != 0 &&
+           ds4_gpu_mimo2_attention_tensor(g->heads, g->q, kc, vc,
+                                          staged ? g->k : NULL, staged ? g->v : NULL,
+                                          swa ? g->sinks[il] : NULL, T, pos0, cap,
+                                          DS4_N_HEAD, kv, DS4_N_HEAD_DIM, DS4_N_VALUE_DIM,
+                                          swa ? DS4_N_SWA : 0u,
+                                          1.0f / sqrtf((float)DS4_N_HEAD_DIM)) != 0 &&
+           (!staged ||
+            ds4_gpu_mimo2_kv_commit_tensor(kc, vc, g->k, g->v, T, pos0, cap, kv,
+                                           DS4_N_HEAD_DIM, DS4_N_VALUE_DIM) != 0) &&
+           mimo2_graph_matmul(g->attn_out, m, l->attn_output, g->heads, T);
+}
+
+static bool mimo2_graph_dense_ffn(ds4_mimo2_gpu_graph *g, const ds4_model *m,
+                                  const ds4_layer_weights *l, uint32_t T) {
+    return mimo2_graph_matmul(g->ffn_gate, m, l->ffn_gate, g->ffn_norm, T) &&
+           mimo2_graph_matmul(g->ffn_up, m, l->ffn_up, g->ffn_norm, T) &&
+           ds4_gpu_swiglu_tensor(g->ffn_mid, g->ffn_gate, g->ffn_up,
+                                 T * DS4_N_FF_DENSE, 0.0f, 1.0f) != 0 &&
+           mimo2_graph_matmul(g->ffn_out, m, l->ffn_down, g->ffn_mid, T);
+}
+
+static bool mimo2_graph_seed_stream_experts(ds4_mimo2_gpu_graph *g,
+                                            const ds4_model *m,
+                                            const ds4_layer_weights *l,
+                                            uint32_t il, uint32_t T) {
+    if (!g->streaming || g->streaming_cold || T <= 1u ||
+        getenv("DS4_METAL_DISABLE_STREAMING_PREFILL_CACHE_SEED")) return true;
+    const uint32_t U = DS4_N_EXPERT_USED, N = DS4_N_EXPERT;
+    const uint32_t routed_layers = g->n_trunk_layers - DS4_N_LEADING_DENSE;
+    if (!routed_layers) return true;
+    uint32_t target = g->streaming_preload_experts ?
+        g->streaming_preload_experts / routed_layers +
+        ((il - DS4_N_LEADING_DENSE) < g->streaming_preload_experts % routed_layers) :
+        ds4_gpu_stream_expert_cache_configured_count() / routed_layers;
+    if (target > 128u) target = 128u;
+    if (!target) return true;
+    if (ds4_gpu_commands_active() && !ds4_gpu_end_commands()) return false;
+    const size_t count = (size_t)T * U;
+    int32_t *selected = xmalloc(count * sizeof(*selected));
+    bool ok = ds4_gpu_tensor_read(g->router_selected, 0, selected,
+                                  count * sizeof(*selected)) != 0;
+    uint32_t frequency[DS4_MAX_EXPERT] = {0};
+    const uint32_t recent = T < 32u ? T : 32u;
+    for (size_t i = 0; ok && i < count; i++) {
+        if (selected[i] < 0 || (uint32_t)selected[i] >= N) ok = false;
+        else {
+            frequency[selected[i]]++;
+            if (i >= (size_t)(T - recent) * U) frequency[selected[i]] += (uint32_t)count;
+        }
+    }
+    free(selected);
+    if (!ok) return false;
+    int32_t experts[128];
+    uint32_t priority[128];
+    uint32_t n = 0;
+    while (n < target) {
+        uint32_t best = 0;
+        for (uint32_t i = 1; i < N; i++) if (frequency[i] > frequency[best]) best = i;
+        if (!frequency[best]) break;
+        experts[n] = (int32_t)best;
+        priority[n] = metal_graph_streaming_builtin_hotness(target - n, target);
+        n++;
+        frequency[best] = 0;
+    }
+    if (n) {
+        const ds4_gpu_stream_expert_table table = {
+            .model_map = m->map, .model_size = m->size, .layer = il,
+            .n_total_expert = N,
+            .gate_offset = l->ffn_gate_exps->abs_offset,
+            .up_offset = l->ffn_up_exps->abs_offset,
+            .down_offset = l->ffn_down_exps->abs_offset,
+            .gate_expert_bytes = g->stream_gate_bytes,
+            .down_expert_bytes = g->stream_down_bytes,
+        };
+        if (!ds4_gpu_begin_commands() ||
+            !ds4_gpu_stream_expert_cache_seed_experts_gpu_copy(&table, experts, priority, n)) return false;
+    }
+    return glm_graph_begin_commands_if_needed();
+}
+
+/* Sigmoid router with the selection-only bias (noaux_tc, one group), top-k
+ * weights renormalized from the unbiased scores, then SwiGLU experts and
+ * their weighted sum.  MiMo has no shared expert.  row_experts (streamed
+ * verification rows, T <= MIMO2_SPEC_MAX_ROWS) runs each row through the
+ * decode expert-cache path instead of reading whole layers from the map. */
+static bool mimo2_graph_moe(ds4_mimo2_gpu_graph *g, const ds4_model *m,
+                            const ds4_layer_weights *l, uint32_t il, uint32_t T,
+                            bool row_experts) {
+    const uint32_t E = DS4_N_EMBD, NE = DS4_N_EXPERT, NU = DS4_N_EXPERT_USED, FF = DS4_N_FF_EXP;
+    if (row_experts && !g->streaming) {
+        const ds4_tensor *gate = l->ffn_gate_exps, *up = l->ffn_up_exps, *down = l->ffn_down_exps;
+        for (uint32_t t = 0; t < T; t++) {
+            if (!ds4_gpu_matmul_f32_tensor(g->router_logits, m->map, m->size,
+                                           l->ffn_gate_inp->abs_offset, E, NE,
+                                           g->verify_ffn_norm_row[t], 1u) ||
+                !ds4_gpu_glm_router_select_tensor(g->router_selected, g->router_weights,
+                                                  g->router_probs, m->map, m->size,
+                                                  l->ffn_exp_probs_b->abs_offset,
+                                                  g->router_logits, NE, NU, DS4_EXPERT_WEIGHT_SCALE) ||
+                !ds4_gpu_qwen4_moe_mid_tensor(g->ffn_mid, g->verify_ffn_norm_row[t],
+                                              g->router_selected, m->map, m->size,
+                                              gate->abs_offset, up->abs_offset, gate->type,
+                                              NE, 1u, NU, E, FF, 0u, 0u, UINT32_MAX) ||
+                !ds4_gpu_qwen4_moe_down_tensor(g->moe_part, g->ffn_mid, g->router_selected,
+                                               m->map, m->size, down->abs_offset, down->type,
+                                               NE, 1u, NU, FF, E, 0u, UINT32_MAX) ||
+                !ds4_gpu_qwen4_moe_reduce_tensor(g->verify_ffn_out_row[t], g->moe_part,
+                                                 g->router_weights, NULL, NULL, NULL, NULL,
+                                                 1u, NU, NU, E, 0u)) return false;
+        }
+        return true;
+    }
+    bool ok = ds4_gpu_matmul_f32_tensor(g->router_logits, m->map, m->size, l->ffn_gate_inp->abs_offset,
+                                        E, NE, g->ffn_norm, T) != 0;
+    if (ok) {
+        ok = (T == 1u ?
+              ds4_gpu_glm_router_select_tensor(g->router_selected, g->router_weights, g->router_probs,
+                                               m->map, m->size, l->ffn_exp_probs_b->abs_offset,
+                                               g->router_logits, NE, NU, DS4_EXPERT_WEIGHT_SCALE) :
+              ds4_gpu_glm_router_select_batch_tensor(g->router_selected, g->router_weights, g->router_probs,
+                                                     m->map, m->size, l->ffn_exp_probs_b->abs_offset,
+                                                     g->router_logits, NE, NU, DS4_EXPERT_WEIGHT_SCALE,
+                                                     T)) != 0;
+    }
+    const ds4_tensor *gate = l->ffn_gate_exps, *up = l->ffn_up_exps, *down = l->ffn_down_exps;
+    const bool stream_one = g->streaming &&
+        gate->type == DS4_TENSOR_MXFP4 && down->type == DS4_TENSOR_MXFP4 &&
+        (E % 256u) == 0 && (FF % 256u) == 0 && NU == 8u && NE >= 128u;
+    if (ok && stream_one && (T == 1u || row_experts)) {
+        for (uint32_t t = 0; ok && t < T; t++) {
+            const bool one = T == 1u;
+            if (!one && t >= MIMO2_SPEC_MAX_ROWS) return false;
+            ok = ds4_gpu_routed_moe_one_tensor(
+                one ? g->ffn_out : g->verify_ffn_out_row[t],
+                g->ffn_gate, g->ffn_up, g->ffn_mid, g->moe_part,
+                m->map, m->size, gate->abs_offset, up->abs_offset, down->abs_offset,
+                gate->type, down->type, g->stream_gate_bytes, g->stream_gate_bytes / FF,
+                g->stream_down_bytes, g->stream_down_bytes / E,
+                E, FF, E,
+                one ? g->router_selected : g->verify_selected_row[t],
+                one ? g->router_weights : g->verify_weights_row[t], NE, NU, 0.0f,
+                one ? g->ffn_norm : g->verify_ffn_norm_row[t], NULL, il, false) != 0;
+        }
+        return ok;
+    }
+    if (ok && row_experts) {
+        fprintf(stderr, "ds4: MiMo streamed verification needs MXFP4 top-eight experts\n");
+        return false;
+    }
+    /* Prefill-sized batches use the expert-grouped tiled GEMMs: each expert
+     * sees enough rows to fill a tile.  Decode rows keep the per-row kernels. */
+    const bool mm = !g->imatrix && T > 64u && (E % 64u) == 0 && (FF % 64u) == 0;
+    if (ok && mm) {
+        ok = ds4_gpu_qwen4_moe_build_lists_tensor(g->moe_lists, g->moe_counts, g->router_selected,
+                                                  T, NU, NE, g->prefill_cap) != 0 &&
+             ds4_gpu_qwen4_moe_mm_mid_tensor(g->ffn_mid, g->ffn_norm, g->moe_lists, g->moe_counts,
+                                             m->map, m->size, gate->abs_offset, up->abs_offset,
+                                             gate->type, NE, T, NU, NU, E, FF, g->prefill_cap) != 0 &&
+             ds4_gpu_qwen4_moe_mm_down_tensor(g->moe_part, g->ffn_mid, g->moe_lists, g->moe_counts,
+                                              m->map, m->size, down->abs_offset, down->type,
+                                              NE, T, NU, NU, FF, E, g->prefill_cap) != 0;
+    } else if (ok) {
+        ok = ds4_gpu_qwen4_moe_mid_tensor(g->ffn_mid, g->ffn_norm, g->router_selected,
+                                          m->map, m->size, gate->abs_offset, up->abs_offset,
+                                          gate->type, NE, T, NU, E, FF, 0u, 0u, UINT32_MAX) != 0 &&
+             ds4_gpu_qwen4_moe_down_tensor(g->moe_part, g->ffn_mid, g->router_selected,
+                                           m->map, m->size, down->abs_offset, down->type,
+                                           NE, T, NU, FF, E, 0u, UINT32_MAX) != 0;
+    }
+    if (!ok || !ds4_gpu_qwen4_moe_reduce_tensor(g->ffn_out, g->moe_part,
+                                                  g->router_weights, NULL, NULL,
+                                                  NULL, NULL, T, NU, NU, E, 0u)) return false;
+    if (g->streaming && T > 1u && !mimo2_graph_seed_stream_experts(g, m, l, il, T)) return false;
+    return true;
+}
+
+static bool mimo2_graph_collect_imatrix(ds4_mimo2_gpu_graph *g,
+                                        uint32_t il, uint32_t T) {
+    if (!g->imatrix || il < DS4_N_LEADING_DENSE) return true;
+    if (ds4_gpu_commands_active() && !ds4_gpu_end_commands()) return false;
+    if (!ds4_gpu_synchronize()) return false;
+    if (!imatrix_collect_tensor_batch(g->imatrix, g->ffn_norm, g->ffn_mid,
+                                      g->router_selected, false, il, T)) return false;
+    return glm_graph_begin_commands_if_needed();
+}
+
+static bool mimo2_dflash_upload(ds4_gpu_tensor **out, const ds4_model *m, const ds4_tensor *t,
+                                uint64_t bytes) {
+    *out = ds4_gpu_tensor_alloc(bytes);
+    return *out && t->abs_offset <= m->size && bytes <= m->size - t->abs_offset &&
+           ds4_gpu_tensor_write(*out, 0, m->map + t->abs_offset, bytes) != 0;
+}
+
+/* Allocates the per-session DFlash state.  The context ring spans one draft
+ * window; the feature buffer the rows a ring can use from one forward. */
+static bool mimo2_dflash_alloc(ds4_mimo2_gpu_graph *g, const ds4_model *dm,
+                               const ds4_dflash_weights *w) {
+    ds4_mimo2_dflash *d = xcalloc(1, sizeof(*d));
+    g->dflash = d;
+    d->model = dm;
+    d->w = w;
+    memset(d->slot, -1, sizeof(d->slot));
+    for (uint32_t i = 0; i < w->n_target; i++) d->slot[w->target_layers[i]] = (int8_t)i;
+    d->ring_cap = w->window < g->ctx_size ? w->window : g->ctx_size;
+    d->feat_cap = d->ring_cap < g->prefill_cap ? d->ring_cap : g->prefill_cap;
+    for (uint32_t i = 0; i < w->rope_dim / 2u; i++)
+        d->rope_freq[i] = (float)pow(w->rope_base, -2.0 * i / w->rope_dim);
+    const uint64_t f32 = sizeof(float), f16 = sizeof(uint16_t);
+    const uint64_t E = w->n_embd, R = d->feat_cap, B = w->block_size, FF = w->n_ff, D = w->head_dim;
+    const uint64_t qd = (uint64_t)w->n_head * D, kvd = (uint64_t)w->n_head_kv * D;
+    bool ok = true;
+#define DFLASH_ALLOC(field, bytes_) do { \
+        if (ok) { d->field = ds4_gpu_tensor_alloc(bytes_); ok = d->field != NULL; } \
+    } while (0)
+    DFLASH_ALLOC(features, R * w->n_target * E * f32);
+    DFLASH_ALLOC(ctx, R * E * f32);
+    DFLASH_ALLOC(ctx_norm, R * E * f32);
+    DFLASH_ALLOC(ctx_k, R * kvd * f32);
+    DFLASH_ALLOC(ctx_v, R * kvd * f32);
+    DFLASH_ALLOC(x, B * E * f32);
+    DFLASH_ALLOC(x_attn, B * E * f32);
+    DFLASH_ALLOC(h, B * E * f32);
+    DFLASH_ALLOC(q, B * qd * f32);
+    DFLASH_ALLOC(bk, B * kvd * f32);
+    DFLASH_ALLOC(bv, B * kvd * f32);
+    DFLASH_ALLOC(bk16, B * kvd * f16);
+    DFLASH_ALLOC(bv16, B * kvd * f16);
+    DFLASH_ALLOC(heads, B * qd * f32);
+    DFLASH_ALLOC(o, B * E * f32);
+    DFLASH_ALLOC(gate, B * FF * f32);
+    DFLASH_ALLOC(up, B * FF * f32);
+    DFLASH_ALLOC(mid, B * FF * f32);
+    DFLASH_ALLOC(ffn, B * E * f32);
+    DFLASH_ALLOC(logits, (B - 1u) * (uint64_t)DS4_N_VOCAB * f32);
+    DFLASH_ALLOC(index, (B - 1u) * sizeof(int32_t));
+    DFLASH_ALLOC(prob, (B - 1u) * f32);
+    DFLASH_ALLOC(mask_rows, (B - 1u) * E * f32);
+#undef DFLASH_ALLOC
+    if (ok) {
+        d->head_in = ds4_gpu_tensor_view(d->h, E * f32, (B - 1u) * E * f32);
+        ok = d->head_in != NULL;
+    }
+    for (uint64_t r = 0; ok && r + 1u < B; r++) {
+        const ds4_tensor *t = w->mask_embd;
+        ok = ds4_gpu_tensor_write(d->mask_rows, r * E * f32, dm->map + t->abs_offset, E * f32) != 0;
+    }
+    for (uint32_t il = 0; ok && il < w->n_layer; il++) {
+        const ds4_dflash_layer_weights *l = &w->layer[il];
+        d->key_ring[il] = ds4_gpu_tensor_alloc((uint64_t)d->ring_cap * kvd * f16);
+        d->value_ring[il] = ds4_gpu_tensor_alloc((uint64_t)d->ring_cap * kvd * f16);
+        ok = d->key_ring[il] && d->value_ring[il] &&
+             mimo2_dflash_upload(&d->q_norm[il], dm, l->attn_q_norm, D * f32) &&
+             mimo2_dflash_upload(&d->k_norm[il], dm, l->attn_k_norm, D * f32) &&
+             (!w->sinks || mimo2_dflash_upload(&d->sinks[il], dm, l->attn_sinks, w->n_head * f32));
+    }
+    if (!ok) {
+        fprintf(stderr, "ds4: DFlash drafter allocation failed (ctx %u)\n", g->ctx_size);
+        mimo2_dflash_free(g);
+    }
+    return ok;
+}
+
+/* Copies the rows of layer il's output a forward keeps for the drafter. */
+static bool mimo2_dflash_capture(ds4_mimo2_gpu_graph *g, uint32_t il, uint32_t T) {
+    ds4_mimo2_dflash *d = g->dflash;
+    if (!d || d->slot[il] < 0) return true;
+    const uint32_t n = T < d->feat_cap ? T : d->feat_cap;
+    return ds4_gpu_dflash_capture_rows_tensor(d->features, g->cur, T - n, 0, n, DS4_N_EMBD,
+                                              d->w->n_target, (uint32_t)d->slot[il]) != 0;
+}
+
+/* Turns feature rows [0, n) (positions feat_pos ..) into context K/V in
+ * every draft layer's ring: fc + hidden_norm, then per layer the k/v
+ * projections, k norm and RoPE, v scale.  Rows that do not continue the
+ * ring's positions restart its context.  Joins the active batch. */
+static bool mimo2_dflash_commit(ds4_mimo2_gpu_graph *g, uint32_t n) {
+    ds4_mimo2_dflash *d = g->dflash;
+    if (!d || n == 0) return true;
+    if (n > d->feat_rows) return false;
+    const ds4_dflash_weights *w = d->w;
+    const ds4_model *dm = d->model;
+    const uint32_t pos = d->feat_pos, kvd = w->n_head_kv * w->head_dim;
+    bool ok = glm_graph_begin_commands_if_needed() &&
+              mimo2_graph_matmul(d->ctx, dm, w->fc, d->features, n) &&
+              ds4_gpu_rms_norm_weight_rows_tensor(d->ctx_norm, d->ctx, dm->map, dm->size,
+                                                  w->hidden_norm->abs_offset, w->n_embd, n,
+                                                  w->rms_eps) != 0;
+    for (uint32_t il = 0; ok && il < w->n_layer; il++) {
+        const ds4_dflash_layer_weights *l = &w->layer[il];
+        ok = mimo2_graph_matmul(d->ctx_k, dm, l->attn_k, d->ctx_norm, n) &&
+             mimo2_graph_matmul(d->ctx_v, dm, l->attn_v, d->ctx_norm, n) &&
+             ds4_gpu_dflash_head_norm_rope_tensor(d->ctx_k, d->k_norm[il], n, w->n_head_kv,
+                                                  w->head_dim, w->rope_dim, pos, w->rms_eps,
+                                                  d->rope_freq) != 0 &&
+             ds4_gpu_dflash_store_kv_tensor(d->key_ring[il], d->value_ring[il], d->ctx_k, d->ctx_v,
+                                            n, pos, d->ring_cap, kvd, w->value_scale) != 0;
+    }
+    if (!ok) return false;
+    if (d->hi != pos || d->lo > pos) d->lo = pos;
+    d->hi = pos + n;
+    if (d->hi - d->lo > d->ring_cap) d->lo = d->hi - d->ring_cap;
+    return true;
+}
+
+/* A rewind to pos keeps the ring rows below it. */
+static void mimo2_dflash_truncate(ds4_mimo2_gpu_graph *g, uint32_t pos) {
+    ds4_mimo2_dflash *d = g ? g->dflash : NULL;
+    if (!d) return;
+    if (pos < d->hi) d->hi = pos;
+    if (d->lo > d->hi) d->lo = d->hi;
+}
+
+/* Forward T tokens at positions pos..pos+T-1.  logits_out, when given,
+ * receives the last row's logits.  hidden_rows / logits_rows (verification,
+ * T <= MIMO2_SPEC_MAX_ROWS, scratch from mimo2_graph_verify_ensure) receive
+ * every row's final-layer hidden (before output_norm) and logits; each row's
+ * head runs as a one-row norm and projection, the kernels a one-token decode
+ * uses.  Streamed verification maps the decode weight set and runs routed
+ * experts per row through the expert cache.  On failure pos is unchanged and
+ * the caller must treat the session state as invalid. */
+static bool mimo2_graph_forward(ds4_mimo2_gpu_graph *g, const ds4_model *m,
+                                const ds4_weights *w, const int *tokens,
+                                uint32_t T, float *logits_out,
+                                float *hidden_rows, float *logits_rows) {
+    if (!g || !m || !w || !tokens || T == 0 || T > g->prefill_cap ||
+        g->pos > g->ctx_size || T > g->ctx_size - g->pos) {
+        return false;
+    }
+    const bool rows = hidden_rows || logits_rows;
+    if (rows && (T > MIMO2_SPEC_MAX_ROWS || !g->verify_row || !g->verify_logits ||
+                 (g->streaming && !g->verify_ffn_out_row[T - 1u]))) return false;
+    for (uint32_t t = 0; t < T; t++) {
+        if (tokens[t] < 0 || tokens[t] >= (int)DS4_N_VOCAB) return false;
+    }
+    const uint32_t pos0 = g->pos;
+    const uint32_t E = DS4_N_EMBD;
+    const bool layer_maps = g->streaming && T > 1u && !rows;
+    if (g->streaming &&
+        !(layer_maps ? metal_graph_stream_map_token(m, w) :
+                       metal_graph_stream_map_decode_static_all(m, w))) return false;
+    if (!ds4_gpu_tensor_write(g->tokens, 0, tokens, (uint64_t)T * sizeof(int32_t))) return false;
+    bool ok = glm_graph_begin_commands_if_needed() &&
+              ds4_gpu_embed_tokens_quant_tensor(g->cur, g->tokens, m->map, m->size,
+                                                w->token_embd->abs_offset, w->token_embd->type,
+                                                DS4_N_VOCAB, T, E) != 0;
+    for (uint32_t il = 0; ok && il < g->n_trunk_layers; il++) {
+        if (layer_maps) {
+            if (ds4_gpu_commands_active() && !ds4_gpu_end_commands()) { ok = false; break; }
+            ok = metal_graph_stream_map_layer(m, w, il) && glm_graph_begin_commands_if_needed();
+            if (!ok) break;
+        }
+        const ds4_layer_weights *l = &w->layer[il];
+        ok = ds4_gpu_rms_norm_weight_rows_tensor(g->attn_norm, g->cur, m->map, m->size,
+                                                 l->attn_norm->abs_offset, E, T, DS4_RMS_EPS) != 0 &&
+             mimo2_graph_attention(g, m, l, il, pos0, T) &&
+             ds4_gpu_add_tensor(g->after_attn, g->cur, g->attn_out, T * E) != 0;
+        if (ok) {
+            metal_graph_debug_dump_tensor("attn_out", g->after_attn,
+                                          (uint64_t)T * E, il, pos0);
+            ok = mimo2_graph_apply_directional_steering(g, g->after_attn, il, T,
+                                                         g->directional_steering_attn_scale);
+        }
+        if (ok) {
+            ok = ds4_gpu_rms_norm_weight_rows_tensor(g->ffn_norm, g->after_attn, m->map, m->size,
+                                                     l->ffn_norm->abs_offset, E, T, DS4_RMS_EPS) != 0 &&
+                 (il < DS4_N_LEADING_DENSE ? mimo2_graph_dense_ffn(g, m, l, T)
+                                           : mimo2_graph_moe(g, m, l, il, T, rows)) &&
+                 mimo2_graph_collect_imatrix(g, il, T) &&
+                 ds4_gpu_add_tensor(g->next, g->after_attn, g->ffn_out, T * E) != 0;
+        }
+        if (ok) {
+            metal_graph_debug_dump_tensor("ffn_out", g->next,
+                                          (uint64_t)T * E, il, pos0);
+            ok = mimo2_graph_apply_directional_steering(g, g->next, il, T,
+                                                         g->directional_steering_ffn_scale);
+        }
+        if (ok) {
+            ds4_gpu_tensor *tmp = g->cur;
+            g->cur = g->next;
+            g->next = tmp;
+            ok = mimo2_dflash_capture(g, il, T);
+        }
+    }
+    /* DFlash context: a plain forward commits its rows now; verification
+     * leaves them in the feature buffer for the accepted prefix. */
+    if (ok && g->dflash) {
+        ds4_mimo2_dflash *d = g->dflash;
+        d->feat_rows = T < d->feat_cap ? T : d->feat_cap;
+        d->feat_pos = pos0 + T - d->feat_rows;
+        if (!rows) ok = mimo2_dflash_commit(g, d->feat_rows);
+    }
+    if (ok && layer_maps && logits_out) {
+        if (ds4_gpu_commands_active() && !ds4_gpu_end_commands()) ok = false;
+        if (ok) ok = metal_graph_stream_map_output(m, w) && glm_graph_begin_commands_if_needed();
+    }
+    ds4_gpu_tensor *last = NULL;
+    if (ok && logits_out) {
+        last = T == 1u ? g->cur :
+            ds4_gpu_tensor_view(g->cur, (uint64_t)(T - 1u) * E * sizeof(float),
+                                (uint64_t)E * sizeof(float));
+        ok = last &&
+             ds4_gpu_rms_norm_weight_tensor(g->output_norm, last, m->map, m->size,
+                                            w->output_norm->abs_offset, E, DS4_RMS_EPS) != 0 &&
+             mimo2_graph_matmul(g->logits, m, w->output, g->output_norm, 1u);
+    }
+    const uint64_t row_bytes = (uint64_t)E * sizeof(float);
+    const uint64_t vocab_bytes = (uint64_t)DS4_N_VOCAB * sizeof(float);
+    for (uint32_t t = 0; ok && logits_rows && t < T; t++) {
+        ok = ds4_gpu_tensor_copy(g->verify_row, 0, g->cur, (uint64_t)t * row_bytes, row_bytes) != 0 &&
+             ds4_gpu_rms_norm_weight_tensor(g->output_norm, g->verify_row, m->map, m->size,
+                                            w->output_norm->abs_offset, E, DS4_RMS_EPS) != 0 &&
+             mimo2_graph_matmul(g->logits, m, w->output, g->output_norm, 1u) &&
+             ds4_gpu_tensor_copy(g->verify_logits, (uint64_t)t * vocab_bytes,
+                                 g->logits, 0, vocab_bytes) != 0;
+    }
+    if (ds4_gpu_commands_active() && ds4_gpu_end_commands() == 0) ok = false;
+    if (last && last != g->cur) ds4_gpu_tensor_free(last);
+    if (ok && logits_out) {
+        ok = ds4_gpu_tensor_read(g->logits, 0, logits_out,
+                                 (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
+    }
+    if (ok && hidden_rows) ok = ds4_gpu_tensor_read(g->cur, 0, hidden_rows, T * row_bytes) != 0;
+    if (ok && logits_rows)
+        ok = ds4_gpu_tensor_read(g->verify_logits, 0, logits_rows, T * vocab_bytes) != 0;
+    if (!ok) {
+        if (ds4_gpu_synchronize() == 0)
+            fprintf(stderr, "ds4: synchronize after MiMo forward failure also failed\n");
+        return false;
+    }
+    g->pos = pos0 + T;
+    return true;
+}
+
+static bool mimo2_graph_forward_tokens(ds4_mimo2_gpu_graph *g, const ds4_model *m,
+                                       const ds4_weights *w, const int *tokens,
+                                       uint32_t T, float *logits_out) {
+    return mimo2_graph_forward(g, m, w, tokens, T, logits_out, NULL, NULL);
+}
+
+static bool mimo2_graph_verify_ensure(ds4_mimo2_gpu_graph *g) {
+    const uint64_t f32 = sizeof(float), E = DS4_N_EMBD;
+    if (!g->verify_row) g->verify_row = ds4_gpu_tensor_alloc(E * f32);
+    if (!g->verify_logits)
+        g->verify_logits = ds4_gpu_tensor_alloc((uint64_t)MIMO2_SPEC_MAX_ROWS * DS4_N_VOCAB * f32);
+    if (!g->verify_row || !g->verify_logits) return false;
+    const uint64_t NU = DS4_N_EXPERT_USED;
+    for (uint32_t r = 0; r < MIMO2_SPEC_MAX_ROWS && r < g->prefill_cap; r++) {
+        if (!g->verify_ffn_norm_row[r])
+            g->verify_ffn_norm_row[r] = ds4_gpu_tensor_view(g->ffn_norm, r * E * f32, E * f32);
+        if (!g->verify_ffn_out_row[r])
+            g->verify_ffn_out_row[r] = ds4_gpu_tensor_view(g->ffn_out, r * E * f32, E * f32);
+        if (!g->verify_selected_row[r])
+            g->verify_selected_row[r] = ds4_gpu_tensor_view(g->router_selected, r * NU * sizeof(int32_t),
+                                                            NU * sizeof(int32_t));
+        if (!g->verify_weights_row[r])
+            g->verify_weights_row[r] = ds4_gpu_tensor_view(g->router_weights, r * NU * f32, NU * f32);
+        if (!g->verify_ffn_norm_row[r] || !g->verify_ffn_out_row[r] ||
+            !g->verify_selected_row[r] || !g->verify_weights_row[r]) return false;
+    }
+    return true;
+}
+
+/* Allocates the draft scratch on first use and the ring of draft depth
+ * `depth` (layer n_trunk_layers + depth: sliding-window attention with its
+ * own sinks, DS4_N_SWA rows) the first time that depth drafts. */
+static bool mimo2_graph_mtp_ensure(ds4_mimo2_gpu_graph *g, const ds4_model *m,
+                                   const ds4_weights *w, uint32_t depth) {
+    const uint64_t f32 = sizeof(float), E = DS4_N_EMBD;
+    if (!g->mtp_concat) {
+        if (!mimo2_graph_mtp_weights_supported(w)) return false;
+        g->mtp_concat = ds4_gpu_tensor_alloc(2u * E * f32);
+        if (!g->mtp_concat) return false;
+    }
+    if (!g->mtp_concat_e) g->mtp_concat_e = ds4_gpu_tensor_view(g->mtp_concat, 0, E * f32);
+    if (!g->mtp_concat_h) g->mtp_concat_h = ds4_gpu_tensor_view(g->mtp_concat, E * f32, E * f32);
+    if (!g->mtp_hidden) g->mtp_hidden = ds4_gpu_tensor_alloc(E * f32);
+    if (!g->mtp_x) g->mtp_x = ds4_gpu_tensor_alloc(E * f32);
+    if (!g->mtp_concat_e || !g->mtp_concat_h || !g->mtp_hidden || !g->mtp_x) return false;
+    const uint32_t il = g->n_trunk_layers + depth;
+    if (g->key_cache[il]) return true;
+    const uint32_t cap = g->ctx_size > DS4_N_SWA ? DS4_N_SWA : g->ctx_size;
+    const uint64_t kv = ds4_layer_head_kv(il);
+    const uint64_t kb = (uint64_t)cap * kv * DS4_N_HEAD_DIM * sizeof(uint16_t);
+    const uint64_t vb = (uint64_t)cap * kv * DS4_N_VALUE_DIM * sizeof(uint16_t);
+    const uint64_t sb = (uint64_t)DS4_N_HEAD * sizeof(float);
+    const ds4_tensor *t = w->layer[il].attn_sinks;
+    if (t->abs_offset > m->size || sb > m->size - t->abs_offset) return false;
+    ds4_gpu_tensor *kc = ds4_gpu_tensor_alloc(kb);
+    ds4_gpu_tensor *vc = ds4_gpu_tensor_alloc(vb);
+    ds4_gpu_tensor *sinks = ds4_gpu_tensor_alloc(sb);
+    if (!kc || !vc || !sinks ||
+        !ds4_gpu_tensor_write(sinks, 0, (const uint8_t *)m->map + t->abs_offset, sb)) {
+        ds4_gpu_tensor_free(kc);
+        ds4_gpu_tensor_free(vc);
+        ds4_gpu_tensor_free(sinks);
+        return false;
+    }
+    g->key_cache[il] = kc;
+    g->value_cache[il] = vc;
+    g->sinks[il] = sinks;
+    g->cache_cap[il] = cap;
+    g->kv_bytes += kb + vb;
+    return true;
+}
+
+/* One native MTP draft step of depth `depth` (0-based; nextn layer
+ * n_trunk_layers + depth).  hidden is the raw trunk final-layer residual row
+ * (before output_norm); MiMo drafts are not chained, so every depth of a
+ * cycle takes the same trunk row and the previous depth's draft as
+ * next_token.  Input eh_proj([enorm(embed(next_token)) | hnorm(hidden)]), then
+ * sliding-window attention over this depth's own ring at mtp_pos (with its
+ * sinks), dense SwiGLU, and layer_output_norm.  hidden_out (optional)
+ * receives that normed row, logits_out (optional) its projection through
+ * the shared output head.  The caller keeps mtp_pos contiguous per depth
+ * from 0 and restarts it at 0 whenever a draft is rejected or the session
+ * resets, so attention reads only rows this depth wrote.  Clobbers the
+ * forward scratch, never the trunk caches or g->pos. */
+static bool mimo2_graph_mtp_step(ds4_mimo2_gpu_graph *g, const ds4_model *m,
+                                 const ds4_weights *w, uint32_t depth,
+                                 const float *hidden, int next_token, uint32_t mtp_pos,
+                                 float *hidden_out, float *logits_out) {
+    if (!g || !m || !w || !hidden || depth >= DS4_N_NEXTN_PREDICT ||
+        g->n_trunk_layers + depth >= DS4_N_LAYER ||
+        next_token < 0 || next_token >= (int)DS4_N_VOCAB || mtp_pos >= g->ctx_size) {
+        return false;
+    }
+    if (!mimo2_graph_mtp_ensure(g, m, w, depth)) {
+        fprintf(stderr, "ds4: MiMo MTP depth %u allocation failed\n", depth);
+        return false;
+    }
+    const uint32_t il = g->n_trunk_layers + depth;
+    const ds4_layer_weights *l = &w->layer[il];
+    const uint32_t E = DS4_N_EMBD;
+    /* A prefill leaves only its last layer set and the output head mapped. */
+    if (g->streaming && !metal_graph_stream_map_decode_static_all(m, w)) return false;
+    if (!ds4_gpu_tensor_write(g->mtp_hidden, 0, hidden, (uint64_t)E * sizeof(float))) return false;
+    bool ok = glm_graph_begin_commands_if_needed() &&
+              ds4_gpu_embed_token_quant_tensor(g->next, m->map, m->size, w->token_embd->abs_offset,
+                                               w->token_embd->type, DS4_N_VOCAB,
+                                               (uint32_t)next_token, E) != 0 &&
+              ds4_gpu_rms_norm_weight_tensor(g->mtp_concat_e, g->next, m->map, m->size,
+                                             l->nextn_enorm->abs_offset, E, DS4_RMS_EPS) != 0 &&
+              ds4_gpu_rms_norm_weight_tensor(g->mtp_concat_h, g->mtp_hidden, m->map, m->size,
+                                             l->nextn_hnorm->abs_offset, E, DS4_RMS_EPS) != 0 &&
+              mimo2_graph_matmul(g->mtp_x, m, l->nextn_eh_proj, g->mtp_concat, 1u) &&
+              ds4_gpu_rms_norm_weight_rows_tensor(g->attn_norm, g->mtp_x, m->map, m->size,
+                                                  l->attn_norm->abs_offset, E, 1u, DS4_RMS_EPS) != 0 &&
+              mimo2_graph_attention(g, m, l, il, mtp_pos, 1u) &&
+              ds4_gpu_add_tensor(g->after_attn, g->mtp_x, g->attn_out, E) != 0 &&
+              ds4_gpu_rms_norm_weight_rows_tensor(g->ffn_norm, g->after_attn, m->map, m->size,
+                                                  l->ffn_norm->abs_offset, E, 1u, DS4_RMS_EPS) != 0 &&
+              mimo2_graph_dense_ffn(g, m, l, 1u) &&
+              ds4_gpu_add_tensor(g->next, g->after_attn, g->ffn_out, E) != 0 &&
+              ds4_gpu_rms_norm_weight_tensor(g->output_norm, g->next, m->map, m->size,
+                                             l->layer_output_norm->abs_offset, E, DS4_RMS_EPS) != 0 &&
+              (!logits_out || mimo2_graph_matmul(g->logits, m, w->output, g->output_norm, 1u));
+    if (ds4_gpu_commands_active() && ds4_gpu_end_commands() == 0) ok = false;
+    if (ok && hidden_out)
+        ok = ds4_gpu_tensor_read(g->output_norm, 0, hidden_out, (uint64_t)E * sizeof(float)) != 0;
+    if (ok && logits_out)
+        ok = ds4_gpu_tensor_read(g->logits, 0, logits_out, (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
+    if (!ok) {
+        if (ds4_gpu_synchronize() == 0)
+            fprintf(stderr, "ds4: synchronize after MiMo MTP failure also failed\n");
+        fprintf(stderr, "ds4: MiMo MTP depth %u failed at draft position %u\n", depth, mtp_pos);
+        return false;
+    }
+    return true;
+}
+
+/* Verify a batch with per-row routed experts. */
+static bool mimo2_graph_verify_rows(ds4_mimo2_gpu_graph *g, const ds4_model *m,
+                                    const ds4_weights *w, const int *tokens, uint32_t T,
+                                    float *hidden_rows, float *logits_rows) {
+    if (!g || !logits_rows || T == 0 || T > MIMO2_SPEC_MAX_ROWS) return false;
+    if (!mimo2_graph_verify_ensure(g)) {
+        fprintf(stderr, "ds4: MiMo verification scratch allocation failed\n");
+        return false;
+    }
+    return mimo2_graph_forward(g, m, w, tokens, T, NULL, hidden_rows, logits_rows);
+}
+
+/* Save (before verification) or restore (after a rejection) the physical
+ * slots (pos + t) % cache_cap of every trunk ring shorter than the context.
+ * Save copies t in [0, T); restore copies back t in [offset, T), the rows
+ * whose positions the rejection discards, so the ring again holds the older
+ * rows that attention past the committed length still reads.  Caches that
+ * hold the whole context need nothing: rows past g->pos are rewritten
+ * before they are read.  GPU blits; the backups are allocated on first save. */
+static bool mimo2_graph_spec_ring_copy(ds4_mimo2_gpu_graph *g, uint32_t pos, uint32_t T,
+                                       uint32_t offset, bool save) {
+    if (!g || T == 0 || T > MIMO2_SPEC_MAX_ROWS || offset > T ||
+        pos > g->ctx_size || T > g->ctx_size - pos) return false;
+    if (!save && offset == T) return true;
+    const bool began = !ds4_gpu_commands_active();
+    bool ok = !began || ds4_gpu_begin_commands() != 0;
+    for (uint32_t il = 0; ok && il < g->n_trunk_layers; il++) {
+        const uint32_t cap = g->cache_cap[il];
+        if (cap >= g->ctx_size) continue;
+        const uint64_t kv = ds4_layer_head_kv(il);
+        const uint64_t krow = kv * DS4_N_HEAD_DIM * sizeof(uint16_t);
+        const uint64_t vrow = kv * DS4_N_VALUE_DIM * sizeof(uint16_t);
+        if (save && !g->spec_key_backup[il])
+            g->spec_key_backup[il] = ds4_gpu_tensor_alloc(MIMO2_SPEC_MAX_ROWS * krow);
+        if (save && !g->spec_value_backup[il])
+            g->spec_value_backup[il] = ds4_gpu_tensor_alloc(MIMO2_SPEC_MAX_ROWS * vrow);
+        ds4_gpu_tensor *kb = g->spec_key_backup[il], *vb = g->spec_value_backup[il];
+        ds4_gpu_tensor *kc = g->key_cache[il], *vc = g->value_cache[il];
+        if (!kb || !vb) { ok = false; break; }
+        /* At most two runs: the slots wrap once since T < cap. */
+        for (uint32_t t = save ? 0u : offset; ok && t < T;) {
+            const uint32_t slot = (pos + t) % cap;
+            const uint32_t n = T - t < cap - slot ? T - t : cap - slot;
+            ok = save ?
+                ds4_gpu_tensor_copy(kb, t * krow, kc, slot * krow, n * krow) != 0 &&
+                ds4_gpu_tensor_copy(vb, t * vrow, vc, slot * vrow, n * vrow) != 0 :
+                ds4_gpu_tensor_copy(kc, slot * krow, kb, t * krow, n * krow) != 0 &&
+                ds4_gpu_tensor_copy(vc, slot * vrow, vb, t * vrow, n * vrow) != 0;
+            t += n;
+        }
+    }
+    if (began && ds4_gpu_commands_active() && ds4_gpu_end_commands() == 0) ok = false;
+    if (!ok) {
+        if (ds4_gpu_synchronize() == 0)
+            fprintf(stderr, "ds4: synchronize after MiMo ring %s failure also failed\n",
+                    save ? "snapshot" : "restore");
+        return false;
+    }
+    return true;
+}
+
+/* One DFlash block at the graph's committed length pos (dflash.py
+ * DFlashDraftModel.forward + spec_generate's draft step).  Row 0 is the
+ * anchor (the sampled, not yet evaluated token at pos) through the target's
+ * token embedding, rows 1 .. block_size-1 the learned mask embedding.  Each
+ * layer: RMSNorm, q/k/v projections, per-head q/k RMSNorm, rotate-half RoPE
+ * on the first rope_dim dims at positions pos .., v scale, attention over the
+ * ring context inside the window plus the whole block (no causal mask) with
+ * the per-head sink, o projection, residual, RMSNorm, SwiGLU, residual.
+ * output_norm on rows 1 .. n_draft, the target output head, and per row the
+ * argmax token and its softmax probability.  The block's own K/V never
+ * enters the ring.  Clobbers only drafter scratch. */
+static bool mimo2_dflash_draft(ds4_mimo2_gpu_graph *g, const ds4_model *m, const ds4_weights *tw,
+                               int anchor, uint32_t n_draft, int32_t *tokens, float *probs) {
+    ds4_mimo2_dflash *d = g->dflash;
+    if (!d || anchor < 0 || anchor >= (int)DS4_N_VOCAB || n_draft == 0 ||
+        n_draft >= d->w->block_size) return false;
+    const ds4_dflash_weights *w = d->w;
+    const ds4_model *dm = d->model;
+    const uint32_t B = w->block_size, E = w->n_embd, H = w->n_head, KV = w->n_head_kv;
+    const uint32_t D = w->head_dim, FF = w->n_ff, pos = g->pos;
+    /* Context that does not reach pos (a restored or rebuilt session) is
+     * dropped: the block drafts from itself until the ring refills. */
+    if (d->hi != pos) d->lo = d->hi = pos;
+    if (g->streaming && !metal_graph_stream_map_decode_static_all(m, tw)) return false;
+    const uint64_t row = (uint64_t)E * sizeof(float);
+    bool ok = glm_graph_begin_commands_if_needed() &&
+              ds4_gpu_embed_token_quant_tensor(d->x, m->map, m->size, tw->token_embd->abs_offset,
+                                               tw->token_embd->type, DS4_N_VOCAB,
+                                               (uint32_t)anchor, E) != 0 &&
+              ds4_gpu_tensor_copy(d->x, row, d->mask_rows, 0, (uint64_t)(B - 1u) * row) != 0;
+    for (uint32_t il = 0; ok && il < w->n_layer; il++) {
+        const ds4_dflash_layer_weights *l = &w->layer[il];
+        ok = ds4_gpu_rms_norm_weight_rows_tensor(d->h, d->x, dm->map, dm->size,
+                                                 l->attn_norm->abs_offset, E, B, w->rms_eps) != 0 &&
+             mimo2_graph_matmul(d->q, dm, l->attn_q, d->h, B) &&
+             mimo2_graph_matmul(d->bk, dm, l->attn_k, d->h, B) &&
+             mimo2_graph_matmul(d->bv, dm, l->attn_v, d->h, B) &&
+             ds4_gpu_dflash_head_norm_rope_tensor(d->q, d->q_norm[il], B, H, D, w->rope_dim, pos,
+                                                  w->rms_eps, d->rope_freq) != 0 &&
+             ds4_gpu_dflash_head_norm_rope_tensor(d->bk, d->k_norm[il], B, KV, D, w->rope_dim, pos,
+                                                  w->rms_eps, d->rope_freq) != 0 &&
+             ds4_gpu_dflash_store_kv_tensor(d->bk16, d->bv16, d->bk, d->bv, B, 0, B, KV * D,
+                                            w->value_scale) != 0 &&
+             ds4_gpu_dflash_attention_tensor(d->heads, d->q, d->key_ring[il], d->value_ring[il],
+                                             d->ring_cap, d->lo, d->hi, d->bk16, d->bv16,
+                                             w->sinks ? d->sinks[il] : NULL, B, pos, H, KV, D,
+                                             w->window, 1.0f / sqrtf((float)D)) != 0 &&
+             mimo2_graph_matmul(d->o, dm, l->attn_output, d->heads, B) &&
+             ds4_gpu_add_tensor(d->x_attn, d->x, d->o, B * E) != 0 &&
+             ds4_gpu_rms_norm_weight_rows_tensor(d->h, d->x_attn, dm->map, dm->size,
+                                                 l->ffn_norm->abs_offset, E, B, w->rms_eps) != 0 &&
+             mimo2_graph_matmul(d->gate, dm, l->ffn_gate, d->h, B) &&
+             mimo2_graph_matmul(d->up, dm, l->ffn_up, d->h, B) &&
+             ds4_gpu_swiglu_tensor(d->mid, d->gate, d->up, B * FF, 0.0f, 1.0f) != 0 &&
+             mimo2_graph_matmul(d->ffn, dm, l->ffn_down, d->mid, B) &&
+             ds4_gpu_add_tensor(d->x, d->x_attn, d->ffn, B * E) != 0;
+    }
+    ok = ok &&
+         ds4_gpu_rms_norm_weight_rows_tensor(d->h, d->x, dm->map, dm->size,
+                                             w->output_norm->abs_offset, E, B, w->rms_eps) != 0 &&
+         mimo2_graph_matmul(d->logits, m, tw->output, d->head_in, n_draft) &&
+         ds4_gpu_dflash_argmax_prob_tensor(d->index, d->prob, d->logits, n_draft, DS4_N_VOCAB) != 0;
+    if (ds4_gpu_commands_active() && ds4_gpu_end_commands() == 0) ok = false;
+    ok = ok && ds4_gpu_tensor_read(d->index, 0, tokens, (uint64_t)n_draft * sizeof(int32_t)) != 0 &&
+         ds4_gpu_tensor_read(d->prob, 0, probs, (uint64_t)n_draft * sizeof(float)) != 0;
+    if (!ok) {
+        if (ds4_gpu_synchronize() == 0)
+            fprintf(stderr, "ds4: synchronize after DFlash draft failure also failed\n");
+        fprintf(stderr, "ds4: DFlash draft failed at position %u\n", pos);
+        return false;
+    }
+    /* DS4_DFLASH_DUMP=FILE: for the first block after a one-chunk prefill,
+     * write the drafter's inputs and outputs so an offline reference can
+     * recompute it: u32 {pos, n_target, n_embd, block, anchor, n_draft},
+     * features [pos][n_target][n_embd], output-normed rows [block][n_embd],
+     * draft tokens and probabilities. */
+    const char *dump = getenv("DS4_DFLASH_DUMP");
+    if (dump && dump[0] && d->lo == 0 && d->hi == pos && d->feat_pos == 0 && d->feat_rows == pos) {
+        FILE *fp = fopen(dump, "wb");
+        const uint64_t feat = (uint64_t)pos * w->n_target * E, hb = (uint64_t)B * E;
+        float *buf = xmalloc((size_t)(feat > hb ? feat : hb) * sizeof(float));
+        const uint32_t hdr[6] = { pos, w->n_target, E, B, (uint32_t)anchor, n_draft };
+        bool dumped = fp && fwrite(hdr, sizeof(hdr), 1, fp) == 1 &&
+                      ds4_gpu_tensor_read(d->features, 0, buf, feat * sizeof(float)) != 0 &&
+                      fwrite(buf, sizeof(float), feat, fp) == feat &&
+                      ds4_gpu_tensor_read(d->h, 0, buf, hb * sizeof(float)) != 0 &&
+                      fwrite(buf, sizeof(float), hb, fp) == hb &&
+                      fwrite(tokens, sizeof(int32_t), n_draft, fp) == n_draft &&
+                      fwrite(probs, sizeof(float), n_draft, fp) == n_draft;
+        if (fp) fclose(fp);
+        free(buf);
+        fprintf(stderr, "ds4: DFlash dump %s %s\n", dump, dumped ? "written" : "failed");
+    }
+    for (uint32_t i = 0; i < n_draft; i++) {
+        if (tokens[i] < 0 || tokens[i] >= (int32_t)DS4_N_VOCAB) return false;
+    }
+    return true;
+}
+
+static int generate_mimo2_metal_argmax(
+        const ds4_model   * model,
+        const ds4_vocab   * vocab,
+        const ds4_weights * weights,
+        const token_vec   * prompt,
+        int                 n_predict,
+        int                 ctx_size,
+        bool                streaming,
+        bool                streaming_cold,
+        uint32_t            streaming_preload_experts,
+        const char        * directional_steering_file,
+        float               directional_steering_attn,
+        float               directional_steering_ffn,
+        ds4_token_emit_fn   emit,
+        ds4_generation_done_fn done,
+        void              * emit_ud,
+        ds4_session_progress_fn progress,
+        void              * progress_ud) {
+    if (!prompt || prompt->len <= 0 || prompt->len >= ctx_size) {
+        fprintf(stderr, "ds4: prompt is empty or exceeds context size\n");
+        return 1;
+    }
+    ds4_mimo2_gpu_graph *g = xcalloc(1, sizeof(*g));
+    if (!mimo2_graph_alloc(g, model, weights, (uint32_t)ctx_size,
+                           streaming, streaming_cold, streaming_preload_experts)) {
+        free(g);
+        return 1;
+    }
+    if (!mimo2_graph_load_directional_steering(g, directional_steering_file,
+                                                directional_steering_attn,
+                                                directional_steering_ffn)) {
+        mimo2_graph_free(g);
+        free(g);
+        return 1;
+    }
+    float *logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(logits[0]));
+    const double t_prefill0 = now_sec();
+    bool ok = true;
+    for (int i = 0; i < prompt->len && ok;) {
+        uint32_t chunk = (uint32_t)(prompt->len - i);
+        if (chunk > g->prefill_cap) chunk = g->prefill_cap;
+        ok = mimo2_graph_forward_tokens(g, model, weights, prompt->v + i, chunk,
+                                        i + (int)chunk == prompt->len ? logits : NULL);
+        i += (int)chunk;
+        if (ok && progress) progress(progress_ud, "prefill_chunk", i, prompt->len);
+    }
+    const double t_prefill1 = now_sec();
+    if (!ok) {
+        fprintf(stderr, "ds4: MiMo prefill failed\n");
+        free(logits);
+        mimo2_graph_free(g);
+        free(g);
+        return 1;
+    }
+    int n_generated = 0;
+    const double t_decode0 = now_sec();
+    for (int i = 0; i < n_predict && g->pos < g->ctx_size; i++) {
+        const int token = sample_argmax(logits, DS4_N_VOCAB);
+        if (vocab_token_is_generation_stop(vocab, token)) break;
+        if (emit) emit(emit_ud, token);
+        n_generated++;
+        if (i == n_predict - 1 || g->pos + 1u >= g->ctx_size) break;
+        if (!mimo2_graph_forward_tokens(g, model, weights, &token, 1u, logits)) {
+            fprintf(stderr, "ds4: MiMo decode failed at position %u\n", g->pos);
+            free(logits);
+            mimo2_graph_free(g);
+            free(g);
+            return 1;
+        }
+    }
+    const double t_decode1 = now_sec();
+    if (done) done(emit_ud);
+    const double prefill_s = t_prefill1 - t_prefill0;
+    const double decode_s = t_decode1 - t_decode0;
+    ds4_log(stderr, DS4_LOG_TIMING, "ds4: MiMo prefill: %.2f t/s, generation: %.2f t/s\n",
+            prefill_s > 0.0 ? (double)prompt->len / prefill_s : 0.0,
+            decode_s > 0.0 ? (double)n_generated / decode_s : 0.0);
+    free(logits);
+    mimo2_graph_free(g);
+    free(g);
+    return 0;
+}
+#endif
+
 #ifdef DS4_HAS_QWEN4_GPU
 /* ------------------------------------------------------------------------
  * Qwen3.8-Flash-Next GPU graph.  One command batch per forward; f32
@@ -59331,6 +61181,19 @@ static int generate_metal_graph_raw_swa(
                                            emit, done, emit_ud, progress, progress_ud);
     }
 #endif
+    if (ds4_model_is_mimo2()) {
+#ifdef DS4_HAS_MIMO2_METAL
+        return generate_mimo2_metal_argmax(model, vocab, weights, prompt, n_predict, ctx_size,
+                                           ssd_streaming, ssd_streaming_cold,
+                                           ssd_streaming_preload_experts,
+                                           directional_steering_file,
+                                           directional_steering_attn, directional_steering_ffn,
+                                           emit, done, emit_ud, progress, progress_ud);
+#else
+        fprintf(stderr, "ds4: MiMo V2.6 Flash runs on Metal only\n");
+        return 1;
+#endif
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
         if (power_percent > 0 && power_percent < 100) {
             fprintf(stderr, "ds4: --power is not supported by the GLM Metal path yet\n");
@@ -60239,6 +62102,30 @@ struct ds4_session {
     float *qwen4_verify_logits;
     uint64_t qwen4_spec_cycles;
     uint64_t qwen4_spec_accepted;
+#endif
+#ifdef DS4_HAS_MIMO2_METAL
+    ds4_mimo2_gpu_graph mimo2_graph;
+    bool mimo2_graph_ready;
+    /* Native MTP (--mtp).  last_hidden is the final trunk row (pre
+     * output_norm) behind s->logits, the conditioning input of every draft
+     * depth.  mtp_pos[d] is depth d's contiguous MTP ring position; it
+     * restarts at 0 on rejection and on every state reset, so MTP attention
+     * only reads rows its own chain has written. */
+    float *mimo2_last_hidden;
+    bool mimo2_hidden_valid;
+    uint32_t mimo2_mtp_pos[3];
+    float *mimo2_mtp_logits;
+    float *mimo2_verify_hidden;   /* 4 rows x DS4_N_EMBD */
+    float *mimo2_verify_logits;   /* 4 rows x DS4_N_VOCAB */
+    uint64_t mimo2_spec_cycles;
+    /* Last verify block [pos0, pos0+T): its pre-verify SWA ring slots stay
+     * in the graph backup until the next forward, so a rewind inside the
+     * block restores them instead of invalidating the checkpoint. */
+    uint32_t mimo2_block_pos0;
+    uint32_t mimo2_block_T;
+    bool mimo2_block_valid;
+    uint64_t mimo2_spec_drafted;
+    uint64_t mimo2_spec_accepted;
 #endif
     uint32_t glm_dense_cache_len;
     /* GLM MTP speculative state.  parent is the token that conditioned the
@@ -61260,6 +63147,34 @@ static bool ds4_session_is_qwen4(const ds4_session *s) {
     return s && s->engine && ds4_model_is_qwen4();
 }
 
+static bool ds4_session_is_mimo2(const ds4_session *s) {
+    return s && s->engine && ds4_model_is_mimo2();
+}
+
+#ifdef DS4_HAS_MIMO2_METAL
+/* Drop the MTP chain history, the conditioning hidden and the rewindable
+ * verify block: the next spec cycle decodes one plain token (which
+ * recaptures the hidden) and every draft depth restarts at position 0. */
+static void mimo2_session_mtp_reset(ds4_session *s) {
+    memset(s->mimo2_mtp_pos, 0, sizeof(s->mimo2_mtp_pos));
+    s->mimo2_hidden_valid = false;
+    s->mimo2_block_valid = false;
+}
+
+/* After a trunk forward of T rows, keep row T-1 of g->cur (final trunk
+ * layer, pre output_norm) as the draft conditioning hidden.  Read before
+ * any MTP step reuses the graph scratch.  The forward overwrote ring slots
+ * outside the last verify block, so that block is no longer rewindable. */
+static void mimo2_session_capture_hidden(ds4_session *s, uint32_t T) {
+    s->mimo2_block_valid = false;
+    if (!s->mimo2_last_hidden || T == 0) return;
+    const uint64_t row = (uint64_t)DS4_N_EMBD * sizeof(float);
+    s->mimo2_hidden_valid =
+        ds4_gpu_tensor_read(s->mimo2_graph.cur, (uint64_t)(T - 1u) * row,
+                            s->mimo2_last_hidden, row) != 0;
+}
+#endif
+
 #ifndef DS4_NO_GPU
 static void ds4_session_glm_reset_dense_cache(ds4_session *s) {
     if (!s) return;
@@ -61301,6 +63216,9 @@ static void ds4_session_glm_note_dense_cache(ds4_session *s,
 #endif
 
 static uint32_t ds4_model_normal_layer_count(void) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        return DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    }
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM_DSA) {
         return (uint32_t)DS4_N_LAYER;
     }
@@ -62197,10 +64115,17 @@ bool ds4_engine_has_mtp(ds4_engine *e) {
 }
 
 bool ds4_engine_mtp_exact_sampling(ds4_engine *e) {
-    return e && e->dspark_exact_sampling;
+    /* MiMo native MTP and DFlash always accept sampled drafts by the exact
+     * p/q rule. */
+    return e && (e->dspark_exact_sampling ||
+                 (ds4_model_is_mimo2() && (e->mimo2_mtp_depth != 0 || e->dflash_ready)));
 }
 
 int ds4_engine_mtp_draft_tokens(ds4_engine *e) {
+    if (e && ds4_model_is_mimo2()) {
+        if (e->dflash_ready) return (int)e->dflash_draft_tokens + 1;
+        return e->mimo2_mtp_depth ? (int)e->mimo2_mtp_depth + 1 : 0;
+    }
     if (e && ds4_model_is_qwen4()) {
         return e->glm_mtp && DS4_N_NEXTN_PREDICT != 0 && e->backend != DS4_BACKEND_CPU ? 2 : 0;
     }
@@ -62469,7 +64394,86 @@ static int ds41_load_payload(ds4_session *s, FILE *fp, const uint32_t *h,
 static uint64_t qwen4_payload_tensor_bytes(uint32_t rows, uint32_t mtp_rows);
 #endif
 
+#ifdef DS4_HAS_MIMO2_METAL
+static uint32_t mimo2_payload_live_rows(const ds4_mimo2_gpu_graph *g,
+                                        uint32_t il, uint32_t checkpoint_len) {
+    const uint32_t cap = g->cache_cap[il];
+    return checkpoint_len < cap ? checkpoint_len : cap;
+}
+
+static uint64_t mimo2_payload_size(const ds4_mimo2_gpu_graph *g,
+                                    uint32_t checkpoint_len) {
+    uint64_t bytes = (uint64_t)(DS4_SESSION_PAYLOAD_U32_FIELDS +
+                     2u * g->n_trunk_layers + checkpoint_len + DS4_N_VOCAB) * sizeof(uint32_t);
+    for (uint32_t il = 0; il < g->n_trunk_layers; il++) {
+        const uint64_t rows = mimo2_payload_live_rows(g, il, checkpoint_len);
+        const uint64_t kv = ds4_layer_head_kv(il);
+        const uint64_t layer_bytes = rows * kv *
+            (DS4_N_HEAD_DIM + DS4_N_VALUE_DIM) * sizeof(uint16_t);
+        if (!g->key_cache[il] || !g->value_cache[il] ||
+            !payload_u64_add(&bytes, layer_bytes)) return 0;
+    }
+    return bytes;
+}
+
+static uint64_t mimo2_payload_bytes(const ds4_session *s) {
+    if (!s || !s->checkpoint_valid || !s->mimo2_graph_ready ||
+        s->checkpoint.len <= 0 || s->mimo2_graph.pos != (uint32_t)s->checkpoint.len)
+        return 0;
+    return mimo2_payload_size(&s->mimo2_graph, (uint32_t)s->checkpoint.len);
+}
+
+static int payload_write_mimo2_ring(FILE *fp, const ds4_gpu_tensor *tensor,
+                                    uint32_t cap, uint32_t first, uint32_t rows,
+                                    uint64_t row_bytes, uint8_t *buf,
+                                    char *err, size_t errlen) {
+    if (rows == 0) return 0;
+    if (!tensor || cap == 0 || rows > cap) {
+        payload_set_err(err, errlen, "invalid MiMo KV ring snapshot");
+        return 1;
+    }
+    const uint32_t index = first % cap;
+    const uint32_t initial = rows < cap - index ? rows : cap - index;
+    int rc = payload_write_tensor_span(fp, tensor, (uint64_t)index * row_bytes,
+                                       (uint64_t)initial * row_bytes, buf,
+                                       DS4_SESSION_IO_CHUNK, err, errlen);
+    if (rc == 0 && initial < rows)
+        rc = payload_write_tensor_span(fp, tensor, 0,
+                                       (uint64_t)(rows - initial) * row_bytes, buf,
+                                       DS4_SESSION_IO_CHUNK, err, errlen);
+    return rc;
+}
+
+static int payload_read_mimo2_ring(FILE *fp, ds4_gpu_tensor *tensor,
+                                   uint32_t cap, uint32_t first, uint32_t rows,
+                                   uint64_t row_bytes, uint8_t *buf,
+                                   uint64_t *remaining, char *err, size_t errlen) {
+    if (rows == 0) return 0;
+    if (!tensor || cap == 0 || rows > cap) {
+        payload_set_err(err, errlen, "invalid MiMo KV ring restore");
+        return 1;
+    }
+    const uint32_t index = first % cap;
+    const uint32_t initial = rows < cap - index ? rows : cap - index;
+    int rc = payload_read_tensor_span(fp, tensor, (uint64_t)index * row_bytes,
+                                      (uint64_t)initial * row_bytes, buf,
+                                      DS4_SESSION_IO_CHUNK, remaining, err, errlen);
+    if (rc == 0 && initial < rows)
+        rc = payload_read_tensor_span(fp, tensor, 0,
+                                      (uint64_t)(rows - initial) * row_bytes, buf,
+                                      DS4_SESSION_IO_CHUNK, remaining, err, errlen);
+    return rc;
+}
+#endif
+
 uint64_t ds4_session_payload_bytes(ds4_session *s) {
+    if (s && !s->distributed && ds4_session_is_mimo2(s)) {
+#ifdef DS4_HAS_MIMO2_METAL
+        return mimo2_payload_bytes(s);
+#else
+        return 0;
+#endif
+    }
     if (s && !s->distributed && ds4_session_is_qwen4(s)) {
 #ifndef DS4_HAS_QWEN4_GPU
         return 0;
@@ -62854,6 +64858,136 @@ static int qwen4_session_load_payload(ds4_session *s, FILE *fp, const uint32_t *
 }
 #endif
 
+#ifdef DS4_HAS_MIMO2_METAL
+#define DS4_MIMO2_PAYLOAD_TAG 0x4d493226u
+
+static int mimo2_session_save_payload(ds4_session *s, FILE *fp,
+                                      char *err, size_t errlen) {
+    const uint64_t expected = mimo2_payload_bytes(s);
+    if (expected == 0 || !ds4_gpu_synchronize()) {
+        payload_set_err(err, errlen, "MiMo graph has no synchronized checkpoint to save");
+        return 1;
+    }
+    const ds4_mimo2_gpu_graph *g = &s->mimo2_graph;
+    const uint32_t len = (uint32_t)s->checkpoint.len;
+    const uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS] = {
+        DS4_SESSION_PAYLOAD_MAGIC, DS4_SESSION_PAYLOAD_VERSION,
+        (uint32_t)s->ctx_size, g->prefill_cap, DS4_N_SWA, DS4_N_HEAD,
+        DS4_N_ROT, len, g->n_trunk_layers, DS4_N_HEAD_DIM,
+        DS4_N_VALUE_DIM, DS4_N_VOCAB, DS4_MIMO2_PAYLOAD_TAG,
+    };
+    for (uint32_t i = 0; i < DS4_SESSION_PAYLOAD_U32_FIELDS; i++)
+        if (payload_write_u32(fp, h[i], err, errlen)) return 1;
+    for (uint32_t i = 0; i < len; i++)
+        if (payload_write_u32(fp, (uint32_t)s->checkpoint.v[i], err, errlen)) return 1;
+    if (payload_write_bytes(fp, s->logits,
+                            (uint64_t)DS4_N_VOCAB * sizeof(float), err, errlen)) return 1;
+    for (uint32_t il = 0; il < g->n_trunk_layers; il++)
+        if (payload_write_u32(fp, mimo2_payload_live_rows(g, il, len), err, errlen)) return 1;
+    for (uint32_t il = 0; il < g->n_trunk_layers; il++) {
+        const uint32_t first = len - mimo2_payload_live_rows(g, il, len);
+        if (payload_write_u32(fp, first, err, errlen)) return 1;
+    }
+    uint8_t *buf = xmalloc(DS4_SESSION_IO_CHUNK);
+    int rc = 0;
+    for (uint32_t il = 0; il < g->n_trunk_layers && rc == 0; il++) {
+        const uint32_t rows = mimo2_payload_live_rows(g, il, len);
+        const uint32_t first = len - rows;
+        const uint64_t kv = ds4_layer_head_kv(il);
+        rc = payload_write_mimo2_ring(fp, g->key_cache[il], g->cache_cap[il],
+                                      first, rows, kv * DS4_N_HEAD_DIM * sizeof(uint16_t),
+                                      buf, err, errlen);
+        if (rc == 0)
+            rc = payload_write_mimo2_ring(fp, g->value_cache[il], g->cache_cap[il],
+                                          first, rows, kv * DS4_N_VALUE_DIM * sizeof(uint16_t),
+                                          buf, err, errlen);
+    }
+    free(buf);
+    return rc;
+}
+
+static int mimo2_session_load_payload(ds4_session *s, FILE *fp,
+                                      const uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS],
+                                      uint64_t *remaining, char *err, size_t errlen) {
+    if (!s->mimo2_graph_ready) {
+        payload_set_err(err, errlen, "MiMo graph is not ready for KV restore");
+        return 1;
+    }
+    ds4_mimo2_gpu_graph *g = &s->mimo2_graph;
+    const uint32_t len = h[7];
+    if (len == 0 || len >= (uint32_t)s->ctx_size || h[2] < len ||
+        h[4] != DS4_N_SWA || h[5] != DS4_N_HEAD || h[6] != DS4_N_ROT ||
+        h[8] != g->n_trunk_layers || h[9] != DS4_N_HEAD_DIM ||
+        h[10] != DS4_N_VALUE_DIM || h[11] != DS4_N_VOCAB ||
+        h[12] != DS4_MIMO2_PAYLOAD_TAG) {
+        payload_set_err(err, errlen, "MiMo KV checkpoint metadata does not match this model/context");
+        return 1;
+    }
+    const uint64_t expected = mimo2_payload_size(g, len);
+    if (expected == 0 || *remaining != expected -
+        (uint64_t)DS4_SESSION_PAYLOAD_U32_FIELDS * sizeof(uint32_t)) {
+        payload_set_err(err, errlen, "MiMo KV checkpoint length is invalid");
+        return 1;
+    }
+    ds4_tokens tokens = {0};
+    uint32_t live[DS4_MAX_LAYER], first[DS4_MAX_LAYER];
+    int rc = 0;
+    s->checkpoint_valid = false;
+    mimo2_graph_reset(g);
+    mimo2_session_mtp_reset(s);
+    for (uint32_t i = 0; i < len && rc == 0; i++) {
+        uint32_t token = 0;
+        rc = payload_read_u32(fp, &token, remaining, err, errlen);
+        if (rc == 0 && token >= DS4_N_VOCAB) {
+            payload_set_err(err, errlen, "MiMo KV checkpoint has invalid token");
+            rc = 1;
+        }
+        if (rc == 0) token_vec_push(&tokens, (int)token);
+    }
+    if (rc == 0)
+        rc = payload_read_bytes(fp, s->logits, (uint64_t)DS4_N_VOCAB * sizeof(float),
+                                remaining, err, errlen);
+    for (uint32_t il = 0; il < g->n_trunk_layers && rc == 0; il++)
+        rc = payload_read_u32(fp, &live[il], remaining, err, errlen);
+    for (uint32_t il = 0; il < g->n_trunk_layers && rc == 0; il++) {
+        rc = payload_read_u32(fp, &first[il], remaining, err, errlen);
+        if (rc == 0 && (live[il] != mimo2_payload_live_rows(g, il, len) ||
+                        first[il] != len - live[il])) {
+            payload_set_err(err, errlen, "MiMo KV ring rows do not match the checkpoint");
+            rc = 1;
+        }
+    }
+    uint8_t *buf = rc == 0 ? xmalloc(DS4_SESSION_IO_CHUNK) : NULL;
+    for (uint32_t il = 0; il < g->n_trunk_layers && rc == 0; il++) {
+        const uint64_t kv = ds4_layer_head_kv(il);
+        rc = payload_read_mimo2_ring(fp, g->key_cache[il], g->cache_cap[il],
+                                     first[il], live[il], kv * DS4_N_HEAD_DIM * sizeof(uint16_t),
+                                     buf, remaining, err, errlen);
+        if (rc == 0)
+            rc = payload_read_mimo2_ring(fp, g->value_cache[il], g->cache_cap[il],
+                                         first[il], live[il], kv * DS4_N_VALUE_DIM * sizeof(uint16_t),
+                                         buf, remaining, err, errlen);
+    }
+    free(buf);
+    if (rc == 0 && *remaining != 0) {
+        payload_set_err(err, errlen, "MiMo KV checkpoint has trailing bytes");
+        rc = 1;
+    }
+    if (rc == 0 && !ds4_gpu_synchronize()) {
+        payload_set_err(err, errlen, "failed to synchronize restored MiMo KV cache");
+        rc = 1;
+    }
+    if (rc == 0) {
+        g->pos = len;
+        ds4_tokens_copy(&s->checkpoint, &tokens);
+        s->checkpoint_valid = true;
+        s->mtp_draft_valid = false;
+    }
+    ds4_tokens_free(&tokens);
+    return rc;
+}
+#endif
+
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
     if (!s || !fp || !s->checkpoint_valid) {
         payload_set_err(err, errlen, "session has no valid checkpoint to save");
@@ -62861,6 +64995,14 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
     }
     if (s->distributed) {
         return ds4_dist_session_save_payload(s->distributed, s, fp, err, errlen);
+    }
+    if (ds4_session_is_mimo2(s)) {
+#ifdef DS4_HAS_MIMO2_METAL
+        return mimo2_session_save_payload(s, fp, err, errlen);
+#else
+        payload_set_err(err, errlen, "MiMo Metal support is not compiled in");
+        return 1;
+#endif
     }
 #ifdef DS4_HAS_DEEPSEEK41_GPU
     if (ds4_session_is_ds41(s)) return ds41_save_payload(s, fp, err, errlen);
@@ -63221,6 +65363,14 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     if (h[0] != DS4_SESSION_PAYLOAD_MAGIC || h[1] != DS4_SESSION_PAYLOAD_VERSION) {
         payload_set_err(err, errlen, "unsupported session payload version");
         return 1;
+    }
+    if (ds4_session_is_mimo2(s)) {
+#ifdef DS4_HAS_MIMO2_METAL
+        return mimo2_session_load_payload(s, fp, h, &remaining, err, errlen);
+#else
+        payload_set_err(err, errlen, "MiMo Metal support is not compiled in");
+        return 1;
+#endif
     }
     if (s->engine && s->engine->tp.active) {
         /* A local payload cannot restore another rank's caches. Keep the exact
@@ -64017,11 +66167,119 @@ static char *imatrix_find_marker(char *dataset, char *cursor, const char *marker
     const size_t marker_len = strlen(marker);
     char *p = cursor;
     while ((p = strstr(p, marker)) != NULL) {
-        if (p == dataset || p[-1] == '\n') return p;
+        if (p == dataset || p == cursor || p[-1] == '\n') return p;
         p += marker_len;
     }
     return NULL;
 }
+
+#ifdef DS4_HAS_MIMO2_METAL
+static int ds4_engine_collect_mimo2_imatrix(
+        ds4_engine *e, char *dataset, size_t dataset_len,
+        const char *dataset_path, const char *output_path, int ctx_size,
+        int max_prompts, int max_tokens, int min_expert_samples) {
+    if (e->ssd_streaming) {
+        fprintf(stderr, "ds4: MiMo imatrix collection requires a resident model\n");
+        return 1;
+    }
+    ds4_mimo2_gpu_graph g = {0};
+    if (!mimo2_graph_alloc(&g, &e->model, &e->weights, (uint32_t)ctx_size,
+                           false, false, 0u)) {
+        fprintf(stderr, "ds4: failed to allocate MiMo imatrix graph\n");
+        return 1;
+    }
+    ds4_imatrix_collector collector;
+    if (!imatrix_collector_init(&collector, g.prefill_cap, dataset_path)) {
+        fprintf(stderr, "ds4: failed to allocate MiMo imatrix collector\n");
+        mimo2_graph_free(&g);
+        return 1;
+    }
+    g.imatrix = &collector;
+    int prompts_done = 0, tokens_done = 0;
+    bool ok = true;
+    bool sample_target_reached = false;
+    char *cursor = dataset;
+    const char *marker_lit = "===== DS4_IMATRIX_PROMPT";
+    fprintf(stderr, "ds4: collecting MiMo routed imatrix from %s (layers=%u experts=%u ctx=%d)\n",
+            dataset_path, g.n_trunk_layers, DS4_N_EXPERT, ctx_size);
+    while (ok && *cursor) {
+        char *start = cursor;
+        char *marker = imatrix_find_marker(dataset, cursor, marker_lit);
+        if (marker) {
+            char *nl = strchr(marker, '\n');
+            if (!nl) break;
+            start = nl + 1;
+        } else if (prompts_done != 0) {
+            break;
+        }
+        char *next = imatrix_find_marker(dataset, start, marker_lit);
+        char *end = next ? next : dataset + dataset_len;
+        const char saved = *end;
+        char *prompt_text = imatrix_trim_block(start, end);
+        if (prompt_text[0]) {
+            ds4_tokens prompt = {0};
+            ds4_tokenize_rendered_chat(e, prompt_text, &prompt);
+            if (prompt.len > ctx_size) prompt.len = ctx_size;
+            if (max_tokens > 0 && prompt.len > max_tokens - tokens_done)
+                prompt.len = max_tokens - tokens_done;
+            if (prompt.len > 0) {
+                mimo2_graph_reset(&g);
+                for (uint32_t pos = 0; ok && pos < (uint32_t)prompt.len;) {
+                    uint32_t n = (uint32_t)prompt.len - pos;
+                    if (n > g.prefill_cap) n = g.prefill_cap;
+                    ok = mimo2_graph_forward_tokens(&g, &e->model, &e->weights,
+                                                    prompt.v + pos, n, NULL);
+                    pos += n;
+                }
+                if (ok) {
+                    prompts_done++;
+                    tokens_done += prompt.len;
+                    const uint32_t min_samples = imatrix_collector_min_samples(
+                        &collector, &e->weights, g.n_trunk_layers);
+                    sample_target_reached = min_expert_samples > 0 &&
+                        min_samples >= (uint32_t)min_expert_samples;
+                    fprintf(stderr, "ds4: MiMo imatrix prompts=%d tokens=%d routes=%llu min_samples=%u\r",
+                            prompts_done, tokens_done,
+                            (unsigned long long)collector.observed_routes, min_samples);
+                    fflush(stderr);
+                } else {
+                    fprintf(stderr, "ds4: MiMo imatrix prefill failed at prompt %d\n",
+                            prompts_done + 1);
+                }
+            }
+            ds4_tokens_free(&prompt);
+        }
+        *end = saved;
+        if (!next || sample_target_reached ||
+            (max_prompts > 0 && prompts_done >= max_prompts) ||
+            (max_tokens > 0 && tokens_done >= max_tokens)) break;
+        cursor = next;
+    }
+    fputc('\n', stderr);
+    g.imatrix = NULL;
+    if (tokens_done == 0) {
+        fprintf(stderr, "ds4: MiMo imatrix dataset contains no usable tokens\n");
+        ok = false;
+    }
+    if (ok) {
+        imatrix_collector_report_coverage(&collector, &e->weights, g.n_trunk_layers);
+        if (min_expert_samples > 0 && !sample_target_reached) {
+            fprintf(stderr, "ds4: MiMo imatrix minimum expert sample target %d was not reached\n",
+                    min_expert_samples);
+            ok = false;
+        }
+    }
+    if (ok) ok = imatrix_collector_save(&collector, &e->weights, output_path);
+    if (ok)
+        fprintf(stderr, "ds4: wrote MiMo imatrix %s from %d prompts, %d tokens, %llu routes\n",
+                output_path, prompts_done, tokens_done,
+                (unsigned long long)collector.observed_routes);
+    imatrix_collector_free(&collector);
+    mimo2_graph_free(&g);
+    return ok ? 0 : 1;
+}
+#endif
+
 
 static int ds4_engine_collect_sequential_imatrix(
         ds4_engine *e,
@@ -64237,6 +66495,15 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
     size_t dataset_len = 0;
     if (!imatrix_read_text_file(dataset_path, &dataset, &dataset_len)) return 1;
 
+#ifdef DS4_HAS_MIMO2_METAL
+    if (ds4_model_is_mimo2()) {
+        const int rc = ds4_engine_collect_mimo2_imatrix(e, dataset, dataset_len,
+                          dataset_path, output_path, ctx_size, max_prompts,
+                          max_tokens, min_expert_samples);
+        free(dataset);
+        return rc;
+    }
+#endif
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
         const int rc = ds4_engine_collect_sequential_imatrix(e,
@@ -64584,7 +66851,8 @@ static bool ds4_session_greedy_splitkv_replay_exact(
 
 int ds4_session_eval_argmax(ds4_session *s, int token, char *err, size_t errlen) {
     if (!s) return -1;
-    if (ds4_session_is_cpu(s) || ds4_session_is_glm(s) || ds4_session_is_ds41(s)) {
+    if (ds4_session_is_cpu(s) || ds4_session_is_glm(s) || ds4_session_is_ds41(s) ||
+        ds4_session_is_mimo2(s)) {
         if (ds4_session_eval(s, token, err, errlen) != 0) return -1;
         return ds4_session_argmax(s);
     }
@@ -68457,7 +70725,8 @@ static bool ds4_engine_configure_streaming_cache_budget(ds4_engine *e) {
     uint64_t prefill_headroom_bytes = 0;
     uint64_t budget_after_prefill_headroom = total_cache_bytes;
     if (total_cache_bytes != 0) {
-        if (!ds4_streaming_prefill_headroom_bytes(&e->weights,
+        if (!ds4_model_is_mimo2() &&
+            !ds4_streaming_prefill_headroom_bytes(&e->weights,
                                                   &prefill_headroom_bytes)) {
             fprintf(stderr,
                     "ds4: SSD streaming prefill headroom byte accounting failed\n");
@@ -70448,6 +72717,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
 #endif
     e->model.fd = -1;
     e->mtp_model.fd = -1;
+    e->dflash_model.fd = -1;
     e->vision_model.fd = -1;
     e->backend = opt->backend;
     e->quality = opt->quality;
@@ -70578,6 +72848,97 @@ static int ds4_engine_open_internal(ds4_engine **out,
         return 1;
     }
     config_validate_model(&e->model);
+    if (opt->dflash_path && opt->dflash_path[0] && !ds4_model_is_mimo2()) {
+        fprintf(stderr, "ds4: --dflash drafts for MiMo V2.6 Flash only\n");
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
+    if (ds4_model_is_mimo2() && !opt->inspect_only) {
+        if (e->backend != DS4_BACKEND_METAL || opt->tp.role != DS4_TP_NONE ||
+            opt->cuda_tensor_parallel || (gpu_cfg && gpu_cfg->n_gpus > 1) ||
+            opt->distributed.role != DS4_DISTRIBUTED_NONE || load_slice) {
+            fprintf(stderr, "ds4: MiMo V2.6 Flash runs on Metal only\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+        if (opt->prefill_chunk != 0 || e->power_percent != 100 ||
+            opt->dspark || (opt->mtp_path && opt->mtp_path[0]) ||
+            (opt->vision_path && opt->vision_path[0]) ||
+            opt->first_token_test || opt->metal_graph_test) {
+            fprintf(stderr, "ds4: MiMo does not support custom prefill chunks, power throttling, DSpark, external MTP or vision\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+        if (e->ssd_streaming && e->quality) {
+            fprintf(stderr, "ds4: MiMo MXFP4 SSD streaming does not support --quality\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+        if (opt->glm_mtp) {
+            /* Drafts per cycle: DS4_MIMO2_MTP_DEPTH (1..3), default 2,
+             * capped by the nextn layers the model ships. */
+            const char *env = getenv("DS4_MIMO2_MTP_DEPTH");
+            long depth = 2;
+            if (env && env[0]) {
+                char *end = NULL;
+                depth = strtol(env, &end, 10);
+                if (!end || *end != '\0' || depth < 1 || depth > 3) {
+                    fprintf(stderr, "ds4: DS4_MIMO2_MTP_DEPTH must be 1, 2 or 3\n");
+                    ds4_engine_close(e);
+                    *out = NULL;
+                    return 1;
+                }
+            }
+            if (DS4_N_NEXTN_PREDICT == 0) {
+                fprintf(stderr, "ds4: --mtp needs the MiMo nextn layers, which this model does not have\n");
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
+            if ((uint32_t)depth > DS4_N_NEXTN_PREDICT) depth = (long)DS4_N_NEXTN_PREDICT;
+            e->mimo2_mtp_depth = (uint32_t)depth;
+        }
+        if (opt->dflash_path && opt->dflash_path[0]) {
+            if (opt->glm_mtp) {
+                fprintf(stderr, "ds4: --dflash and --mtp are alternative drafters; pass one\n");
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
+            model_open(&e->dflash_model, opt->dflash_path, graph_backend, true);
+            if (!dflash_weights_load(&e->dflash, &e->dflash_model,
+                                     DS4_N_LAYER - DS4_N_NEXTN_PREDICT)) {
+                fprintf(stderr, "ds4: cannot use DFlash sidecar %s\n", opt->dflash_path);
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
+            const uint32_t max_draft = e->dflash.block_size - 1u;
+            if (opt->dflash_draft_tokens < 0 || (uint32_t)opt->dflash_draft_tokens > max_draft) {
+                fprintf(stderr, "ds4: --dflash-draft must be 1..%u for this sidecar\n", max_draft);
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
+            const float p_min = opt->dflash_p_min_set ? opt->dflash_p_min : 0.4f;
+            if (!(p_min >= 0.0f && p_min <= 1.0f)) {
+                fprintf(stderr, "ds4: --dflash-p-min must be in 0..1\n");
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
+            e->dflash_draft_tokens = opt->dflash_draft_tokens ? (uint32_t)opt->dflash_draft_tokens : max_draft;
+            e->dflash_p_min = p_min;
+            e->dflash_ready = true;
+            fprintf(stderr, "ds4: DFlash drafter loaded: %s (%u layers, block %u, up to %u drafts, p-min %.2f)\n",
+                    opt->dflash_path, e->dflash.n_layer, e->dflash.block_size,
+                    e->dflash_draft_tokens, (double)e->dflash_p_min);
+        }
+    }
     if (ds4_model_is_qwen4() && !opt->inspect_only) {
         const bool backend_ok =
 #ifdef DS4_HAS_QWEN4_GPU
@@ -70966,8 +73327,8 @@ static int ds4_engine_open_internal(ds4_engine **out,
         e->vision_end_token = vocab_lookup(&e->vocab, "<|vision_end|>");
     }
     if (opt->glm_mtp &&
-        ((DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM_DSA && !ds4_model_is_qwen4()) ||
-         DS4_N_NEXTN_PREDICT == 0)) {
+        ((DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM_DSA && !ds4_model_is_qwen4() &&
+          !ds4_model_is_mimo2()) || DS4_N_NEXTN_PREDICT == 0)) {
         fprintf(stderr,
                 "ds4: --mtp requires a model with embedded MTP weights; "
                 "use --mtp-model FILE for external support\n");
@@ -71648,6 +74009,20 @@ static int ds4_engine_open_internal(ds4_engine **out,
             *out = NULL;
             return 1;
         }
+        if (e->dflash_ready &&
+            !ds4_gpu_set_model_map_range(e->dflash_model.map,
+                                         e->dflash_model.size,
+                                         e->dflash_model.tensor_data_pos,
+                                         e->dflash_model.size - e->dflash_model.tensor_data_pos,
+                                         e->dflash_model.max_tensor_bytes)) {
+            fprintf(stderr, "ds4: %s failed to map the DFlash sidecar; aborting startup\n",
+                    ds4_backend_name(e->backend));
+            free(load_offsets);
+            free(load_sizes);
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
         if (!ds4_engine_preload_pro_q4_expert_tables(e,
                                                      load_slice,
                                                      load_layer_start,
@@ -71840,6 +74215,10 @@ bool ds4_engine_is_glm53(ds4_engine *e) {
 bool ds4_engine_is_qwen4(ds4_engine *e) {
     (void)e;
     return ds4_model_is_qwen4();
+}
+
+bool ds4_engine_is_mimo2(ds4_engine *e) {
+    return e != NULL && ds4_model_is_mimo2();
 }
 
 /* The official template's default effort is xhigh; medium adds no text. */
@@ -72626,6 +75005,7 @@ void ds4_engine_close(ds4_engine *e) {
     vocab_free(&e->vocab);
     ds4_threads_shutdown();
     if (e->mtp_model.map) model_close(&e->mtp_model);
+    if (e->dflash_model.map) model_close(&e->dflash_model);
     if (e->vision_model.map) model_close(&e->vision_model);
     model_close(&e->model);
 #ifndef DS4_NO_GPU
@@ -72799,6 +75179,10 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
             fprintf(stderr, "ds4: Qwen3.8 sessions require Metal or CUDA\n");
             return 1;
         }
+        if (ds4_model_is_mimo2()) {
+            fprintf(stderr, "ds4: MiMo V2.6 Flash runs on Metal only\n");
+            return 1;
+        }
         if (e->distributed.role == DS4_DISTRIBUTED_COORDINATOR) {
             fprintf(stderr, "ds4: distributed coordinator sessions require the graph backend\n");
             return 1;
@@ -72945,6 +75329,60 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         return 0;
     }
 #endif
+    if (ds4_model_is_mimo2()) {
+#ifdef DS4_HAS_MIMO2_METAL
+        if (e->backend != DS4_BACKEND_METAL || e->distributed.role != DS4_DISTRIBUTED_NONE ||
+            e->tp.active) {
+            fprintf(stderr, "ds4: MiMo V2.6 Flash sessions require single-host Metal\n");
+            free(s);
+            return 1;
+        }
+        if (e->mimo2_mtp_depth && !mimo2_graph_mtp_weights_supported(&e->weights)) {
+            fprintf(stderr, "ds4: --mtp cannot run this MiMo model's nextn layers\n");
+            free(s);
+            return 1;
+        }
+        if (!mimo2_graph_alloc(&s->mimo2_graph, &e->model, &e->weights, (uint32_t)ctx_size,
+                               e->ssd_streaming, e->ssd_streaming_cold,
+                               e->ssd_streaming_preload_experts)) {
+            free(s);
+            return 1;
+        }
+        if (!mimo2_graph_load_directional_steering(&s->mimo2_graph,
+                e->directional_steering_file, e->directional_steering_attn_scale,
+                e->directional_steering_ffn_scale)) {
+            mimo2_graph_free(&s->mimo2_graph);
+            free(s);
+            return 1;
+        }
+        if (e->dflash_ready &&
+            !mimo2_dflash_alloc(&s->mimo2_graph, &e->dflash_model, &e->dflash)) {
+            mimo2_graph_free(&s->mimo2_graph);
+            free(s);
+            return 1;
+        }
+        s->mimo2_graph_ready = true;
+        /* sync chunks internally at the graph's prefill_cap */
+        s->prefill_cap = (uint32_t)ctx_size;
+        s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
+        s->sample_probs = xmalloc((size_t)DS4_N_VOCAB * sizeof(s->sample_probs[0]));
+        if (e->mimo2_mtp_depth) {
+            s->mimo2_last_hidden = xmalloc((size_t)DS4_N_EMBD * sizeof(float));
+            s->mimo2_mtp_logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(float));
+            s->mimo2_verify_hidden = xmalloc((size_t)MIMO2_SPEC_MAX_ROWS * DS4_N_EMBD * sizeof(float));
+            s->mimo2_verify_logits = xmalloc((size_t)MIMO2_SPEC_MAX_ROWS * DS4_N_VOCAB * sizeof(float));
+        }
+        if (e->dflash_ready) {
+            s->mimo2_verify_logits = xmalloc((size_t)MIMO2_SPEC_MAX_ROWS * DS4_N_VOCAB * sizeof(float));
+        }
+        *out = s;
+        return 0;
+#else
+        fprintf(stderr, "ds4: MiMo V2.6 Flash runs on Metal only\n");
+        free(s);
+        return 1;
+#endif
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
         const uint32_t normal_layers = glm_graph_normal_layer_count();
         uint32_t layer_start = 0;
@@ -73287,6 +75725,26 @@ void ds4_session_free(ds4_session *s) {
             ds41_graph_free(&s->ds41_graph);
         } else
 #endif
+#ifdef DS4_HAS_MIMO2_METAL
+        if (ds4_session_is_mimo2(s)) {
+            const bool dflash = s->engine && s->engine->dflash_ready;
+            if (s->engine && (s->engine->glm_mtp_timing || dflash) && s->mimo2_spec_cycles) {
+                fprintf(stderr, "ds4: MiMo %s: %" PRIu64 " verify cycles, %" PRIu64 " drafts, %" PRIu64
+                                " accepted (%.1f%%), %.2f committed tokens per verify\n",
+                        dflash ? "dflash" : "mtp",
+                        s->mimo2_spec_cycles, s->mimo2_spec_drafted, s->mimo2_spec_accepted,
+                        s->mimo2_spec_drafted ?
+                            100.0 * (double)s->mimo2_spec_accepted / (double)s->mimo2_spec_drafted : 0.0,
+                        (double)(s->mimo2_spec_cycles + s->mimo2_spec_accepted) /
+                            (double)s->mimo2_spec_cycles);
+            }
+            free(s->mimo2_last_hidden);
+            free(s->mimo2_mtp_logits);
+            free(s->mimo2_verify_hidden);
+            free(s->mimo2_verify_logits);
+            mimo2_graph_free(&s->mimo2_graph);
+        } else
+#endif
 #ifdef DS4_HAS_QWEN4_GPU
         if (ds4_session_is_qwen4(s)) {
             if (s->engine && s->engine->glm_mtp_timing && s->qwen4_spec_cycles) {
@@ -73356,6 +75814,11 @@ int ds4_session_set_power(ds4_session *s, int power_percent) {
         fprintf(stderr, "ds4: session power throttling is not supported for GLM 5.2 yet\n");
         return 1;
     }
+    if (ds4_session_is_mimo2(s)) {
+        if (power_percent == 100) return 0;
+        fprintf(stderr, "ds4: session power throttling is not supported for MiMo yet\n");
+        return 1;
+    }
 #endif
     s->engine->power_percent = power_percent;
 #ifndef DS4_NO_GPU
@@ -73368,6 +75831,10 @@ float ds4_session_directional_steering_ffn(ds4_session *s) {
     if (!s || !s->engine) return 0.0f;
 #ifndef DS4_NO_GPU
     if (!ds4_session_is_cpu(s)) {
+#ifdef DS4_HAS_MIMO2_METAL
+        if (ds4_session_is_mimo2(s))
+            return s->mimo2_graph.directional_steering_ffn_scale;
+#endif
         return ds4_session_is_glm(s) ?
             s->glm_graph.directional_steering_ffn_scale :
             s->graph.directional_steering_ffn_scale;
@@ -73390,6 +75857,12 @@ int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale) {
     bool loaded = s->engine->directional_steering_dirs != NULL;
 #ifndef DS4_NO_GPU
     if (!ds4_session_is_cpu(s)) {
+#ifdef DS4_HAS_MIMO2_METAL
+        if (ds4_session_is_mimo2(s)) {
+            loaded = s->mimo2_graph_ready &&
+                     s->mimo2_graph.directional_steering_dirs != NULL;
+        } else
+#endif
 #ifdef DS4_HAS_QWEN4_GPU
         if (s->qwen4_graph_ready) {
             loaded = s->qwen4_graph.steer_dirs != NULL;
@@ -73414,6 +75887,11 @@ int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale) {
     s->engine->directional_steering_ffn_scale = scale;
 #ifndef DS4_NO_GPU
     if (!ds4_session_is_cpu(s)) {
+#ifdef DS4_HAS_MIMO2_METAL
+        if (ds4_session_is_mimo2(s)) {
+            s->mimo2_graph.directional_steering_ffn_scale = scale;
+        } else
+#endif
 #ifdef DS4_HAS_QWEN4_GPU
         if (s->qwen4_graph_ready) {
             s->qwen4_graph.steer_ffn_scale = scale;
@@ -75268,6 +77746,65 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
                                      err,
                                      errlen);
     }
+#ifdef DS4_HAS_MIMO2_METAL
+    if (ds4_session_is_mimo2(s)) {
+        ds4_engine *e = s->engine;
+        ds4_mimo2_gpu_graph *g = &s->mimo2_graph;
+        if (!s->mimo2_graph_ready) {
+            snprintf(err, errlen, "MiMo graph is not initialized");
+            return 1;
+        }
+        if (s->sync_image_count) {
+            snprintf(err, errlen, "MiMo V2.6 Flash is text-only in ds4");
+            return 1;
+        }
+        for (int i = 0; i < prompt->len; i++) {
+            if (prompt->v[i] < 0 || prompt->v[i] >= (int)DS4_N_VOCAB) {
+                snprintf(err, errlen, "token id %d at position %d is outside the vocabulary", prompt->v[i], i);
+                return 1;
+            }
+        }
+        int start = 0;
+        if (s->checkpoint_valid && g->pos == (uint32_t)s->checkpoint.len &&
+            prompt->len >= s->checkpoint.len &&
+            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
+            start = s->checkpoint.len;
+        } else {
+            mimo2_graph_reset(g);
+            mimo2_session_mtp_reset(s);
+            s->checkpoint.len = 0;
+            s->checkpoint_valid = false;
+        }
+        if (start > 0 && start < prompt->len) mimo2_session_mtp_reset(s);
+        s->mtp_draft_valid = false;
+        for (int i = start; i < prompt->len;) {
+            if (ds4_session_cancelled(s)) {
+                snprintf(err, errlen, "interrupted");
+                s->checkpoint_valid = s->checkpoint.len > 0;
+                return DS4_SESSION_SYNC_INTERRUPTED;
+            }
+            uint32_t chunk = (uint32_t)(prompt->len - i);
+            if (chunk > g->prefill_cap) chunk = g->prefill_cap;
+            /* Progress callbacks may persist this frontier, and cancellation
+             * may leave it as the live session, so every chunk produces its
+             * own logits. */
+            s->checkpoint_valid = false;
+            if (!mimo2_graph_forward_tokens(g, &e->model, &e->weights,
+                                            prompt->v + i, chunk, s->logits)) {
+                mimo2_session_mtp_reset(s);
+                snprintf(err, errlen, "MiMo prefill failed at token %d", i);
+                return 1;
+            }
+            mimo2_session_capture_hidden(s, chunk);
+            for (uint32_t j = 0; j < chunk; j++) token_vec_push(&s->checkpoint, prompt->v[i + (int)j]);
+            i += (int)chunk;
+            s->checkpoint_valid = true;
+            if (s->progress) s->progress(s->progress_ud, "prefill_chunk", i, prompt->len);
+        }
+        s->checkpoint_valid = true;
+        return 0;
+    }
+#endif
 #ifdef DS4_HAS_QWEN4_GPU
     if (ds4_session_is_qwen4(s)) {
         ds4_engine *e = s->engine;
@@ -77331,6 +79868,38 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         return 0;
     }
 #endif
+#ifdef DS4_HAS_MIMO2_METAL
+    if (ds4_session_is_mimo2(s)) {
+        ds4_mimo2_gpu_graph *g = &s->mimo2_graph;
+        if (!s->mimo2_graph_ready) {
+            if (errlen) snprintf(err, errlen, "MiMo graph is not initialized");
+            return 1;
+        }
+        /* ds4_session_eval requires a synchronized checkpoint; a rewind
+         * invalidates it, so the caller rebuilds through ds4_session_sync. */
+        if (!s->checkpoint_valid || g->pos != (uint32_t)s->checkpoint.len) {
+            if (errlen) snprintf(err, errlen, "MiMo decode requires a synchronized checkpoint");
+            s->checkpoint_valid = false;
+            return 1;
+        }
+        if (g->pos >= g->ctx_size) {
+            if (errlen) snprintf(err, errlen, "context is full");
+            return 1;
+        }
+        if (!mimo2_graph_forward_tokens(g, &e->model, &e->weights, &token, 1u, s->logits)) {
+            if (errlen) snprintf(err, errlen, "MiMo decode failed at position %u", g->pos);
+            s->checkpoint_valid = false;
+            mimo2_session_mtp_reset(s);
+            return 1;
+        }
+        mimo2_session_capture_hidden(s, 1u);
+        token_vec_push(&s->checkpoint, token);
+        s->checkpoint_valid = true;
+        s->mtp_draft_valid = false;
+        (void)probe_mtp;
+        return 0;
+    }
+#endif
 #ifdef DS4_HAS_QWEN4_GPU
     if (ds4_session_is_qwen4(s)) {
         if (!s->qwen4_graph_ready) {
@@ -79021,6 +81590,8 @@ static bool ds4_sessions_eval_batch_metal_supported(
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41)
         return ds41_sessions_batch_supported(items, count, e);
 #endif
+    /* MiMo batches run one session at a time through ds4_session_eval. */
+    if (ds4_model_is_mimo2()) return false;
 #ifdef DS4_HAS_QWEN4_METAL
     if (items[0].session && ds4_session_is_qwen4(items[0].session))
         return qwen4_graph_native_session_batch_supported(items, count, e);
@@ -79645,6 +82216,7 @@ static bool ds4_sessions_eval_batch_with_prefill_metal_supported(
         (e->tp.active && tp_batch && strcmp(tp_batch, "0") == 0) ||
         ds4_session_is_cpu(prefill_session) ||
         ds4_session_is_glm(prefill_session) ||
+        ds4_session_is_mimo2(prefill_session) ||
         prefill_session->distributed ||
         prefill_session->graph.ssd_streaming ||
         ds4_session_cancelled(prefill_session) ||
@@ -84131,6 +86703,202 @@ static int ds4_sessions_eval_batch_with_prefill_cuda(
     return rc;
 }
 
+#ifdef DS4_HAS_MIMO2_METAL
+/* One MiMo speculative cycle, drafting with DFlash when the session has a
+ * drafter and with the native MTP stack otherwise.
+ *
+ * MTP: draft depth d is conditioned on the trunk hidden behind s->logits
+ * (the same hidden at every depth) and on the previous depth's token,
+ * first_token for d == 0.  DFlash: one parallel block anchored at
+ * first_token drafts every position at once from the target features of
+ * the committed context; drafts stop before the running product of their
+ * probabilities falls below --dflash-p-min.  Either way each draft is the
+ * drafter's argmax, a point-mass proposal, and [first_token, drafts...] is
+ * verified in one target batch.  Greedy decoding keeps drafts while each is
+ * the target argmax of the row before it.  Sampled decoding (temperature >
+ * 0) accepts draft d with probability p(d) and on rejection commits a sample
+ * of the residual (p with d removed), which reproduces sampling from p
+ * exactly; the replacement is decoded so s->logits follows it.  Rejected
+ * rows get their SWA ring slots back from the pre-verify snapshot, and only
+ * the committed rows' target features enter the DFlash context.
+ * Returns the committed token count (first_token first), or -1 with the
+ * checkpoint invalidated. */
+static int ds4_session_mimo2_spec_cycle(
+        ds4_session *s, int first_token, int eos_token,
+        bool ignore_eos, ds4_think_mode think_mode,
+        float temperature, int top_k, float top_p, float min_p, uint64_t *rng,
+        int *accepted, int accepted_cap, char *err, size_t errlen) {
+    ds4_engine *e = s->engine;
+    ds4_mimo2_gpu_graph *g = &s->mimo2_graph;
+    const ds4_model *m = &e->model;
+    const ds4_weights *w = &e->weights;
+    const uint32_t V = DS4_N_VOCAB, E = DS4_N_EMBD;
+    const bool sampled = temperature > 0.0f;
+    const bool dflash = g->dflash != NULL;
+    const char *tag = dflash ? "dflash" : "mtp";
+    if (!s->mimo2_graph_ready || !s->mimo2_verify_logits ||
+        (!dflash && !s->mimo2_last_hidden) ||
+        g->pos != (uint32_t)s->checkpoint.len) {
+        if (errlen) snprintf(err, errlen, "MiMo %s requires a synchronized checkpoint", tag);
+        s->checkpoint_valid = false;
+        return -1;
+    }
+    if (sampled && !rng) {
+        if (errlen) snprintf(err, errlen, "MiMo %s: sampled decoding needs an rng", tag);
+        return -1;
+    }
+    uint32_t depth = dflash ? e->dflash_draft_tokens : e->mimo2_mtp_depth;
+    if ((uint32_t)accepted_cap - 1u < depth) depth = (uint32_t)accepted_cap - 1u;
+    const uint32_t room = g->pos < g->ctx_size ? g->ctx_size - g->pos : 0u;
+    if (room <= depth) depth = room ? room - 1u : 0u;
+    if (depth > MIMO2_SPEC_MAX_ROWS - 1u) depth = MIMO2_SPEC_MAX_ROWS - 1u;
+
+    int toks[MIMO2_SPEC_MAX_ROWS];
+    toks[0] = first_token;
+    for (uint32_t i = 1; i < MIMO2_SPEC_MAX_ROWS; i++) toks[i] = -1;
+    uint32_t n_draft = 0;
+    if (dflash) {
+        if (depth > 0 && first_token != eos_token) {
+            int32_t drafts[MIMO2_SPEC_MAX_ROWS];
+            float probs[MIMO2_SPEC_MAX_ROWS];
+            if (!mimo2_dflash_draft(g, m, w, first_token, depth, drafts, probs)) {
+                if (errlen) snprintf(err, errlen, "MiMo dflash: draft failed at position %u", g->pos);
+                s->checkpoint_valid = false;
+                return -1;
+            }
+            float reach = 1.0f;
+            for (uint32_t i = 0; i < depth; i++) {
+                reach *= probs[i];
+                if (reach < e->dflash_p_min) break;
+                const int draft = drafts[i];
+                if (ignore_eos && ds4_token_is_stop_for_think_mode(e, draft, think_mode)) break;
+                toks[++n_draft] = draft;
+                if (!ignore_eos && draft == eos_token) break;
+            }
+        }
+    } else if (depth > 0 && first_token != eos_token && s->mimo2_hidden_valid) {
+        for (uint32_t d = 0; d < depth; d++) {
+            if (s->mimo2_mtp_pos[d] >= g->ctx_size) s->mimo2_mtp_pos[d] = 0;
+            if (!mimo2_graph_mtp_step(g, m, w, d, s->mimo2_last_hidden, toks[d],
+                                      s->mimo2_mtp_pos[d], NULL, s->mimo2_mtp_logits)) {
+                if (errlen) snprintf(err, errlen, "MiMo mtp: draft depth %u failed at position %u", d, g->pos);
+                s->checkpoint_valid = false;
+                mimo2_session_mtp_reset(s);
+                return -1;
+            }
+            s->mimo2_mtp_pos[d]++;
+            const int draft = sample_argmax(s->mimo2_mtp_logits, V);
+            if (ignore_eos && ds4_token_is_stop_for_think_mode(e, draft, think_mode)) break;
+            toks[++n_draft] = draft;
+            if (!ignore_eos && draft == eos_token) break;
+        }
+    }
+    if (n_draft == 0) {
+        if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;
+        accepted[0] = first_token;
+        return 1;
+    }
+
+    const uint32_t pos0 = g->pos, T = n_draft + 1u;
+    float *hid = dflash ? NULL : s->mimo2_verify_hidden, *rows = s->mimo2_verify_logits;
+    if (!mimo2_graph_spec_ring_copy(g, pos0, T, 0u, true) ||
+        !mimo2_graph_verify_rows(g, m, w, toks, T, hid, rows)) {
+        if (errlen) snprintf(err, errlen, "MiMo %s: verify failed at position %u", tag, pos0);
+        s->checkpoint_valid = false;
+        mimo2_session_mtp_reset(s);
+        return -1;
+    }
+    uint32_t n_acc = 0;
+    int replacement = -1;
+    for (uint32_t i = 0; i < n_draft; i++) {
+        const float *row = rows + (size_t)i * V;
+        const int draft = toks[i + 1u];
+        if (!sampled) {
+            if (sample_argmax(row, V) != draft) break;
+        } else {
+            if (!sample_build_probabilities(row, V, temperature, top_k, top_p, min_p,
+                                            s->sample_probs)) {
+                if (errlen) snprintf(err, errlen, "MiMo %s: target distribution failed", tag);
+                s->checkpoint_valid = false;
+                mimo2_session_mtp_reset(s);
+                return -1;
+            }
+            if (!speculative_point_accept(s->sample_probs[draft], 1.0f, rng)) {
+                replacement = speculative_point_replacement(s, draft, rng);
+                if (replacement < 0) {
+                    if (errlen) snprintf(err, errlen, "MiMo %s: replacement sampling failed", tag);
+                    s->checkpoint_valid = false;
+                    mimo2_session_mtp_reset(s);
+                    return -1;
+                }
+                break;
+            }
+        }
+        n_acc++;
+    }
+    const uint32_t n_commit = n_acc + 1u;
+    if (n_commit < T) {
+        if (!mimo2_graph_spec_ring_copy(g, pos0, T, n_commit, false)) {
+            if (errlen) snprintf(err, errlen, "MiMo %s: rejection restore failed", tag);
+            s->checkpoint_valid = false;
+            mimo2_session_mtp_reset(s);
+            return -1;
+        }
+        g->pos = pos0 + n_commit;
+        memset(s->mimo2_mtp_pos, 0, sizeof(s->mimo2_mtp_pos));
+    }
+    /* The committed rows' target features become DFlash context. */
+    if (dflash && (!mimo2_dflash_commit(g, n_commit) ||
+                   (ds4_gpu_commands_active() && ds4_gpu_end_commands() == 0))) {
+        if (errlen) snprintf(err, errlen, "MiMo dflash: context commit failed at position %u", pos0);
+        s->checkpoint_valid = false;
+        return -1;
+    }
+    for (uint32_t i = 0; i < n_commit; i++) {
+        token_vec_push(&s->checkpoint, toks[i]);
+        accepted[i] = toks[i];
+    }
+    memcpy(s->logits, rows + (size_t)n_acc * V, (size_t)V * sizeof(float));
+    if (!dflash) {
+        memcpy(s->mimo2_last_hidden, hid + (size_t)n_acc * E, (size_t)E * sizeof(float));
+        s->mimo2_hidden_valid = true;
+    }
+    int n_out = (int)n_commit;
+    if (replacement >= 0) {
+        if (!mimo2_graph_forward_tokens(g, m, w, &replacement, 1u, s->logits)) {
+            if (errlen) snprintf(err, errlen, "MiMo %s: replacement decode failed at position %u", tag, g->pos);
+            s->checkpoint_valid = false;
+            mimo2_session_mtp_reset(s);
+            return -1;
+        }
+        mimo2_session_capture_hidden(s, 1u);
+        token_vec_push(&s->checkpoint, replacement);
+        accepted[n_out++] = replacement;
+    }
+    s->mimo2_block_pos0 = pos0;
+    s->mimo2_block_T = T;
+    s->mimo2_block_valid = true;
+    s->checkpoint_valid = true;
+    s->mtp_draft_valid = false;
+    s->mimo2_spec_cycles++;
+    s->mimo2_spec_drafted += n_draft;
+    s->mimo2_spec_accepted += n_acc;
+    return n_out;
+}
+
+/* Greedy DFlash speculation (--dflash): one block anchored at first_token,
+ * verified by the target; commits first_token and the argmax-matching
+ * draft prefix, and s->logits then follows the last committed token. */
+static int ds4_session_eval_dflash_speculative_argmax(
+        ds4_session *s, int first_token, int eos_token,
+        bool ignore_eos, ds4_think_mode think_mode,
+        int *accepted, int accepted_cap, char *err, size_t errlen) {
+    return ds4_session_mimo2_spec_cycle(s, first_token, eos_token, ignore_eos, think_mode,
+                                        0.0f, 0, 0.0f, 0.0f, NULL,
+                                        accepted, accepted_cap, err, errlen);
+}
+#endif
+
 static int ds4_session_eval_speculative_argmax_impl(
         ds4_session *s, int first_token, int max_tokens, int eos_token,
         bool ignore_eos, ds4_think_mode think_mode,
@@ -84144,6 +86912,24 @@ static int ds4_session_eval_speculative_argmax_impl(
     if (accepted_cap > max_tokens) accepted_cap = max_tokens;
     if (s->distributed) {
         if (!accepted) return 0;
+        if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;
+        accepted[0] = first_token;
+        return 1;
+    }
+    if (ds4_session_is_mimo2(s)) {
+        if (!accepted) return 0;
+#ifdef DS4_HAS_MIMO2_METAL
+        if (s->mimo2_graph_ready && s->mimo2_graph.dflash) {
+            return ds4_session_eval_dflash_speculative_argmax(s, first_token, eos_token, ignore_eos,
+                                                              think_mode, accepted, accepted_cap,
+                                                              err, errlen);
+        }
+        if (s->engine->mimo2_mtp_depth && s->mimo2_last_hidden) {
+            return ds4_session_mimo2_spec_cycle(s, first_token, eos_token, ignore_eos, think_mode,
+                                                0.0f, 0, 0.0f, 0.0f, NULL,
+                                                accepted, accepted_cap, err, errlen);
+        }
+#endif
         if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;
         accepted[0] = first_token;
         return 1;
@@ -85021,7 +87807,16 @@ int ds4_session_eval_speculative(ds4_session *s, int first_token,
         return -1;
     }
     if (accepted_cap > max_tokens) accepted_cap = max_tokens;
-    if (s->distributed || ds4_session_is_cpu(s)) {
+#ifdef DS4_HAS_MIMO2_METAL
+    if (!s->distributed && ds4_session_is_mimo2(s) &&
+        ((s->mimo2_graph_ready && s->mimo2_graph.dflash) ||
+         (s->engine->mimo2_mtp_depth && s->mimo2_last_hidden))) {
+        return ds4_session_mimo2_spec_cycle(s, first_token, eos_token, false, DS4_THINK_HIGH,
+                                            temperature, top_k, top_p, min_p, rng,
+                                            accepted, accepted_cap, err, errlen);
+    }
+#endif
+    if (s->distributed || ds4_session_is_cpu(s) || ds4_session_is_mimo2(s)) {
         if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;
         accepted[0] = first_token;
         return 1;
@@ -85166,6 +87961,9 @@ void ds4_session_invalidate(ds4_session *s) {
 #ifdef DS4_HAS_DEEPSEEK41_GPU
     if (s->ds41_graph_ready) ds41_graph_reset(&s->ds41_graph);
 #endif
+#ifdef DS4_HAS_MIMO2_METAL
+    if (ds4_session_is_mimo2(s)) mimo2_session_mtp_reset(s);
+#endif
     ds4_session_glm_reset_dense_cache(s);
 #endif
 }
@@ -85211,6 +88009,39 @@ void ds4_session_rewind(ds4_session *s, int pos) {
         /* Qwen eval replays the kept transcript if reset left the graph behind. */
         state_ok = true;
         s->qwen4_rewound = logit_row < 0;
+    }
+#endif
+#ifdef DS4_HAS_MIMO2_METAL
+    /* Replay the token before pos to rebuild its logits.  That is exact
+     * while the SWA rings have not wrapped, or when pos lies inside the last
+     * verify block, whose pre-verify ring slots the graph still holds.
+     * Otherwise the rings lost rows the kept prefix needs.  The MTP chain
+     * restarts either way; a replay recaptures the hidden. */
+    if (s->checkpoint_valid && ds4_session_is_mimo2(s)) {
+        ds4_mimo2_gpu_graph *g = &s->mimo2_graph;
+        if (s->mimo2_graph_ready && pos > 0 &&
+            g->pos == (uint32_t)s->checkpoint.len) {
+            bool replay = s->checkpoint.len <= (int)DS4_N_SWA;
+            if (!replay && s->mimo2_block_valid &&
+                (uint32_t)pos >= s->mimo2_block_pos0 &&
+                (uint32_t)s->checkpoint.len <= s->mimo2_block_pos0 + s->mimo2_block_T) {
+                replay = mimo2_graph_spec_ring_copy(g, s->mimo2_block_pos0, s->mimo2_block_T,
+                                                    (uint32_t)pos - s->mimo2_block_pos0, false);
+            }
+            if (replay) {
+                g->pos = (uint32_t)pos - 1u;
+                mimo2_dflash_truncate(g, g->pos);
+                state_ok = mimo2_graph_forward_tokens(g, &s->engine->model,
+                            &s->engine->weights, &s->checkpoint.v[pos - 1], 1u, s->logits);
+                if (state_ok) mimo2_session_capture_hidden(s, 1u);
+            }
+        }
+        if (!state_ok) mimo2_graph_reset(g);
+    }
+    if (ds4_session_is_mimo2(s)) {
+        memset(s->mimo2_mtp_pos, 0, sizeof(s->mimo2_mtp_pos));
+        s->mimo2_block_valid = false;
+        if (!state_ok) s->mimo2_hidden_valid = false;
     }
 #endif
     if (s->checkpoint_valid && ds4_session_is_glm(s)) {

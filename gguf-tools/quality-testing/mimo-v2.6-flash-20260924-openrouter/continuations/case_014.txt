@@ -1,0 +1,1 @@
+Certamente. Spiego in dettaglio perché la cache KV su disco è una componente fondamentale per le session

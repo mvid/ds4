@@ -1,0 +1,3 @@
+Ecco un esempio classico e molto breve di **Race Condition** in C.
+
+In questo esempio

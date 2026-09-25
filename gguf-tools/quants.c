@@ -116,6 +116,13 @@ static int ds4q_nearest_int(float fval) {
     return (i & 0x007fffff) - 0x00400000;
 }
 
+static int ds4q_nearest_int_saturated(float fval, int max) {
+    assert(!isnan(fval));
+    if (fval <= 0.0f) return 0;
+    if (fval >= (float)max) return max;
+    return ds4q_nearest_int(fval);
+}
+
 static float ds4q_make_qkx2_quants(int n, int nmax, const float *x, const float *weights,
                                    uint8_t *L, float *the_min, uint8_t *Laux,
                                    float rmin, float rdelta, int nstep, bool use_mad) {
@@ -160,8 +167,7 @@ static float ds4q_make_qkx2_quants(int n, int nmax, const float *x, const float 
         iscale = (rmin + rdelta * is + nmax) / (max - min);
         float sum_l = 0, sum_l2 = 0, sum_xl = 0;
         for (int i = 0; i < n; i++) {
-            int l = ds4q_nearest_int(iscale * (x[i] - min));
-            l = DS4Q_MAX(0, DS4Q_MIN(nmax, l));
+            int l = ds4q_nearest_int_saturated(iscale * (x[i] - min), nmax);
             Laux[i] = l;
             float w = weights[i];
             sum_l += w * l;
@@ -234,8 +240,7 @@ static float ds4q_make_qkx3_quants(int n, int nmax, const float *x, const float 
         iscale = (rmin + rdelta * is + nmax) / (max - min);
         float sum_l = 0, sum_l2 = 0, sum_xl = 0;
         for (int i = 0; i < n; i++) {
-            int l = ds4q_nearest_int(iscale * (x[i] - min));
-            l = DS4Q_MAX(0, DS4Q_MIN(nmax, l));
+            int l = ds4q_nearest_int_saturated(iscale * (x[i] - min), nmax);
             Laux[i] = l;
             float w = weights ? weights[i] : x[i] * x[i];
             sum_l += w * l;
@@ -290,8 +295,7 @@ static float ds4q_make_qp_quants(int n, int nmax, const float *x, uint8_t *L, co
         float scale_is = 1 / iscale_is;
         float mse = 0;
         for (int i = 0; i < n; i++) {
-            int l = ds4q_nearest_int(iscale_is * x[i]);
-            l = DS4Q_MIN(nmax, l);
+            int l = ds4q_nearest_int_saturated(iscale_is * x[i], nmax);
             float diff = x[i] - scale_is * l;
             mse += quant_weights[i] * diff * diff;
         }
@@ -302,8 +306,7 @@ static float ds4q_make_qp_quants(int n, int nmax, const float *x, uint8_t *L, co
     }
     float sumlx = 0, suml2 = 0;
     for (int i = 0; i < n; i++) {
-        int l = ds4q_nearest_int(iscale * x[i]);
-        l = DS4Q_MIN(nmax, l);
+        int l = ds4q_nearest_int_saturated(iscale * x[i], nmax);
         L[i] = l;
         float w = quant_weights[i];
         sumlx += w * x[i] * l;
@@ -316,8 +319,7 @@ static float ds4q_make_qp_quants(int n, int nmax, const float *x, uint8_t *L, co
             float slx = sumlx - w * x[i] * L[i];
             float sl2 = suml2 - w * L[i] * L[i];
             if (slx > 0 && sl2 > 0) {
-                int new_l = ds4q_nearest_int(x[i] * sl2 / slx);
-                new_l = DS4Q_MIN(nmax, new_l);
+                int new_l = ds4q_nearest_int_saturated(x[i] * sl2 / slx, nmax);
                 if (new_l != L[i]) {
                     slx += w * x[i] * new_l;
                     sl2 += w * new_l * new_l;
@@ -592,8 +594,7 @@ static void ds4q_write_q4_k_block_weighted(const float *x, uint8_t *y, const flo
         if (!dd) continue;
         const float dm = ds4q_f16_to_f32(dmin) * m;
         for (int ii = 0; ii < 32; ii++) {
-            int l = ds4q_nearest_int((x[32 * j + ii] + dm) / dd);
-            l = DS4Q_MAX(0, DS4Q_MIN(15, l));
+            int l = ds4q_nearest_int_saturated((x[32 * j + ii] + dm) / dd, 15);
             L[32 * j + ii] = l;
         }
     }
@@ -726,8 +727,7 @@ static void ds4q_write_q2_k_block_weighted(const float *x, uint8_t *y, const flo
         if (!d) continue;
         const float m = mm * (scales_out[j] >> 4);
         for (int ii = 0; ii < 16; ii++) {
-            int l = ds4q_nearest_int((x[16 * j + ii] + m) / d);
-            l = DS4Q_MAX(0, DS4Q_MIN(3, l));
+            int l = ds4q_nearest_int_saturated((x[16 * j + ii] + m) / d, 3);
             L[16 * j + ii] = l;
         }
     }
@@ -1007,8 +1007,7 @@ static void ds4q_write_iq2_xxs_block(const float *x, uint8_t *y, const float *qu
             for (int k = 0; k < 4; k++) {
                 uint16_t u = 0;
                 for (int i = 0; i < 8; i++) {
-                    int l = ds4q_nearest_int(0.5f * (id * xval[8 * k + i] - 1));
-                    l = DS4Q_MAX(0, DS4Q_MIN(k_max_q - 1, l));
+                    int l = ds4q_nearest_int_saturated(0.5f * (id * xval[8 * k + i] - 1), k_max_q - 1);
                     Laux[8 * k + i] = (uint8_t)l;
                     u |= (uint16_t)(l << (2 * i));
                 }
@@ -1038,8 +1037,7 @@ static void ds4q_write_iq2_xxs_block(const float *x, uint8_t *y, const float *qu
             for (int k = 0; k < 4; k++) {
                 uint16_t u = 0;
                 for (int i = 0; i < 8; i++) {
-                    int l = ds4q_nearest_int(0.5f * (id * xval[8 * k + i] - 1));
-                    l = DS4Q_MAX(0, DS4Q_MIN(k_max_q - 1, l));
+                    int l = ds4q_nearest_int_saturated(0.5f * (id * xval[8 * k + i] - 1), k_max_q - 1);
                     u |= (uint16_t)(l << (2 * i));
                 }
                 int grid_index = map[u];
@@ -1089,8 +1087,7 @@ static void ds4q_write_iq2_xxs_block(const float *x, uint8_t *y, const float *qu
     memcpy(y + d_off, &hd, sizeof(hd));
     float id = 1 / d;
     for (int ib = 0; ib < QK_K / block_size; ib++) {
-        int l = ds4q_nearest_int(0.5f * (id * scales[ib] - 1));
-        l = DS4Q_MAX(0, DS4Q_MIN(15, l));
+        int l = ds4q_nearest_int_saturated(0.5f * (id * scales[ib] - 1), 15);
         q2[2 * ib + 1] |= (uint32_t)l << 28;
     }
     memcpy(y + qs_off, q2, QK_K / 4);

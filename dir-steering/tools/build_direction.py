@@ -25,8 +25,10 @@ from pathlib import Path
 MODEL_PROFILES = {
     "deepseek-v4-flash": (43, 4096),
     "glm-5.3-flash": (45, 4096),
+    "mimo-v2.6-flash": (48, 4096),
     "qwen3.8-flash-next": (48, 2560),
 }
+
 
 
 def read_prompt_file(path: Path) -> list[str]:
@@ -57,6 +59,7 @@ def dot(a: list[float], b: list[float]) -> float:
 def run_capture(
     ds4: Path,
     model: Path,
+    profile: str,
     prompt: str,
     system: str,
     think: bool,
@@ -83,8 +86,9 @@ def run_capture(
         "--ctx", str(ctx),
         "--prompt-file", str(prompt_path),
         "-n", "1",
-        "--prefill-chunk", str(max(ctx, 1024)),
     ]
+    if profile != "mimo-v2.6-flash":
+        cmd += ["--prefill-chunk", str(max(ctx, 1024))]
     if system:
         cmd += ["--system", system]
     cmd.append("--think" if think else "--nothink")
@@ -164,9 +168,9 @@ def main() -> None:
             bw = root / f"bad-{i}"
             gw.mkdir()
             bw.mkdir()
-            good_rows = run_capture(ds4, model, good, args.system, args.think,
+            good_rows = run_capture(ds4, model, args.profile, good, args.system, args.think,
                                     args.ctx, args.component, n_layer, n_embd, gw)
-            bad_rows = run_capture(ds4, model, bad, args.system, args.think,
+            bad_rows = run_capture(ds4, model, args.profile, bad, args.system, args.think,
                                    args.ctx, args.component, n_layer, n_embd, bw)
             add_rows(good_sum, good_rows, n_layer)
             add_rows(bad_sum, bad_rows, n_layer)

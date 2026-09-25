@@ -470,6 +470,8 @@ static id<MTLComputePipelineState> g_moe_mul_mv_id_mxfp4_pair_swiglu_tp_static_p
 static id<MTLComputePipelineState> g_moe_mul_mv_id_mxfp4_sum6_tp_full_rows_static_pipeline_nsg1;
 static id<MTLComputePipelineState> g_moe_mul_mv_slots6_mxfp4_pair_swiglu_pipeline;
 static id<MTLComputePipelineState> g_moe_mul_mv_slots6_mxfp4_sum6_pipeline;
+static id<MTLComputePipelineState> g_moe_mul_mv_slots8_mxfp4_pair_swiglu_pipeline;
+static id<MTLComputePipelineState> g_moe_mul_mv_slots8_mxfp4_sum8_pipeline;
 static id<MTLComputePipelineState> g_moe_mul_mv_addr_iq2_xxs_pair_swiglu_pipeline;
 static id<MTLComputePipelineState> g_moe_mul_mv_addr_iq2_xxs_pipeline;
 static id<MTLComputePipelineState> g_moe_mul_mv_addr_q2_k_sum6_pipeline;
@@ -4786,6 +4788,8 @@ static NSString *ds4_gpu_full_source(void) {
         @[@"DS4_METAL_SET_ROWS_SOURCE",   @"metal/set_rows.metal"],
         @[@"DS4_METAL_QWEN4_SOURCE",      @"metal/qwen4.metal"],
         @[@"DS4_METAL_QWEN4_VISION_SOURCE", @"metal/qwen4_vision.metal"],
+        @[@"DS4_METAL_MIMO2_SOURCE",      @"metal/mimo2.metal"],
+        @[@"DS4_METAL_DFLASH_SOURCE",     @"metal/dflash.metal"],
     ];
 
     NSMutableString *source = [NSMutableString stringWithString:base];
@@ -8279,6 +8283,10 @@ int ds4_gpu_init(void) {
             ds4_gpu_get_mul_mv_pipeline("kernel_mul_mv_slots6_mxfp4_pair_swiglu_f32", 2);
         g_moe_mul_mv_slots6_mxfp4_sum6_pipeline =
             ds4_gpu_get_mul_mv_pipeline("kernel_mul_mv_slots6_mxfp4_sum6_f32", 2);
+        g_moe_mul_mv_slots8_mxfp4_pair_swiglu_pipeline =
+            ds4_gpu_get_mul_mv_pipeline("kernel_mul_mv_slots8_mxfp4_pair_swiglu_f32", 2);
+        g_moe_mul_mv_slots8_mxfp4_sum8_pipeline =
+            ds4_gpu_get_mul_mv_pipeline("kernel_mul_mv_slots8_mxfp4_sum8_f32", 2);
         if (!g_moe_mul_mv_id_mxfp4_pipeline ||
             !g_moe_mul_mv_id_mxfp4_pair_swiglu_pipeline ||
             !g_moe_mul_mv_id_mxfp4_sum6_pipeline ||
@@ -11534,6 +11542,8 @@ int ds4_gpu_synchronize(void) {
 
 static void qwen4_nax_release_scratch(void);
 static void qwen4_batch_release_scratch(void);
+static void mimo2_release_scratch(void);
+static void dflash_release_pipelines(void);
 
 void ds4_gpu_cleanup(void) {
     if (!g_initialized) return;
@@ -11660,6 +11670,8 @@ void ds4_gpu_cleanup(void) {
         g_moe_mul_mv_id_mxfp4_sum6_tp_full_rows_static_pipeline_nsg1 = nil;
         g_moe_mul_mv_slots6_mxfp4_pair_swiglu_pipeline = nil;
         g_moe_mul_mv_slots6_mxfp4_sum6_pipeline = nil;
+        g_moe_mul_mv_slots8_mxfp4_pair_swiglu_pipeline = nil;
+        g_moe_mul_mv_slots8_mxfp4_sum8_pipeline = nil;
         g_moe_mul_mv_addr_iq2_xxs_pair_swiglu_pipeline = nil;
         g_moe_mul_mv_addr_iq2_xxs_pipeline = nil;
         g_moe_mul_mv_addr_q2_k_sum6_pipeline = nil;
@@ -11825,6 +11837,8 @@ void ds4_gpu_cleanup(void) {
         g_model_mapped_max_tensor_bytes = 0;
         qwen4_nax_release_scratch();
         qwen4_batch_release_scratch();
+        mimo2_release_scratch();
+        dflash_release_pipelines();
         ds4_gpu_tensor_tracking_reset();
         g_flash_attn_mask_bytes = 0;
         g_flash_attn_zero_mask_bytes = 0;
@@ -32349,15 +32363,15 @@ static int ds4_gpu_encode_q4_gather_slots6(
     return 1;
 }
 
-static int ds4_gpu_encode_mul_mv_slots6_pair_swiglu(
+static int ds4_gpu_encode_mul_mv_slots_pair_swiglu(
         id<MTLCommandBuffer>        cb,
         id<MTLComputePipelineState> pipeline,
         const ds4_gpu_mul_mv_id_args *args,
         const ds4_gpu_dsv4_moe_swiglu_weight_args *act,
-        __unsafe_unretained id<MTLBuffer> src0_a[6],
-        const NSUInteger            src0_a_off[6],
-        __unsafe_unretained id<MTLBuffer> src0_b[6],
-        const NSUInteger            src0_b_off[6],
+        __unsafe_unretained id<MTLBuffer> src0_a[DS4_METAL_MAX_ROUTED_EXPERT_USED],
+        const NSUInteger src0_a_off[DS4_METAL_MAX_ROUTED_EXPERT_USED],
+        __unsafe_unretained id<MTLBuffer> src0_b[DS4_METAL_MAX_ROUTED_EXPERT_USED],
+        const NSUInteger src0_b_off[DS4_METAL_MAX_ROUTED_EXPERT_USED],
         id<MTLBuffer>               src1,
         NSUInteger                  src1_off,
         id<MTLBuffer>               dst_a,
@@ -32373,10 +32387,11 @@ static int ds4_gpu_encode_mul_mv_slots6_pair_swiglu(
         bool                        rows_per_group_is_nr0) {
     if (!cb || !pipeline || !args || !act || !src0_a || !src0_a_off || !src0_b || !src0_b_off ||
         !src1 || !dst_a || !dst_b || !dst_mid || !weights ||
-        args->ne00 <= 0 || args->ne01 <= 0 || args->nei0 != 6 || args->nei1 <= 0) {
+        args->ne00 <= 0 || args->ne01 <= 0 ||
+        (args->nei0 != 6 && args->nei0 != 8) || args->nei1 <= 0) {
         return 0;
     }
-    for (uint32_t i = 0; i < 6; i++) {
+    for (uint32_t i = 0; i < (uint32_t)args->nei0; i++) {
         if (!src0_a[i] || !src0_b[i]) return 0;
     }
 
@@ -32389,17 +32404,18 @@ static int ds4_gpu_encode_mul_mv_slots6_pair_swiglu(
     [enc setComputePipelineState:pipeline];
     [enc setBytes:args length:sizeof(*args) atIndex:0];
     [enc setBytes:act  length:sizeof(*act)  atIndex:1];
-    for (uint32_t i = 0; i < 6; i++) {
+    for (uint32_t i = 0; i < (uint32_t)args->nei0; i++) {
         [enc setBuffer:src0_a[i] offset:src0_a_off[i] atIndex:2 + i];
     }
-    for (uint32_t i = 0; i < 6; i++) {
-        [enc setBuffer:src0_b[i] offset:src0_b_off[i] atIndex:8 + i];
+    for (uint32_t i = 0; i < (uint32_t)args->nei0; i++) {
+        [enc setBuffer:src0_b[i] offset:src0_b_off[i] atIndex:2u + (NSUInteger)args->nei0 + i];
     }
-    [enc setBuffer:src1    offset:src1_off    atIndex:14];
-    [enc setBuffer:dst_a   offset:dst_a_off   atIndex:15];
-    [enc setBuffer:dst_b   offset:dst_b_off   atIndex:16];
-    [enc setBuffer:dst_mid offset:dst_mid_off atIndex:17];
-    [enc setBuffer:weights offset:weights_off atIndex:18];
+    const NSUInteger next = 2u + 2u * (NSUInteger)args->nei0;
+    [enc setBuffer:src1    offset:src1_off    atIndex:next];
+    [enc setBuffer:dst_a   offset:dst_a_off   atIndex:next + 1u];
+    [enc setBuffer:dst_b   offset:dst_b_off   atIndex:next + 2u];
+    [enc setBuffer:dst_mid offset:dst_mid_off atIndex:next + 3u];
+    [enc setBuffer:weights offset:weights_off atIndex:next + 4u];
     if (threadgroup_bytes != 0) {
         [enc setThreadgroupMemoryLength:threadgroup_bytes atIndex:0];
     }
@@ -32409,12 +32425,12 @@ static int ds4_gpu_encode_mul_mv_slots6_pair_swiglu(
     return 1;
 }
 
-static int ds4_gpu_encode_mul_mv_slots6_sum6(
+static int ds4_gpu_encode_mul_mv_slots_sum(
         id<MTLCommandBuffer>        cb,
         id<MTLComputePipelineState> pipeline,
         const ds4_gpu_mul_mv_id_args *args,
-        __unsafe_unretained id<MTLBuffer> src0[6],
-        const NSUInteger            src0_off[6],
+        __unsafe_unretained id<MTLBuffer> src0[DS4_METAL_MAX_ROUTED_EXPERT_USED],
+        const NSUInteger src0_off[DS4_METAL_MAX_ROUTED_EXPERT_USED],
         id<MTLBuffer>               src1,
         NSUInteger                  src1_off,
         id<MTLBuffer>               dst,
@@ -32422,10 +32438,11 @@ static int ds4_gpu_encode_mul_mv_slots6_sum6(
         NSUInteger                  threadgroup_bytes,
         NSUInteger                  nsg) {
     if (!cb || !pipeline || !args || !src0 || !src0_off || !src1 || !dst ||
-        args->ne00 <= 0 || args->ne01 <= 0 || args->nei0 != 6 || args->nei1 <= 0) {
+        args->ne00 <= 0 || args->ne01 <= 0 ||
+        (args->nei0 != 6 && args->nei0 != 8) || args->nei1 <= 0) {
         return 0;
     }
-    for (uint32_t i = 0; i < 6; i++) {
+    for (uint32_t i = 0; i < (uint32_t)args->nei0; i++) {
         if (!src0[i]) return 0;
     }
 
@@ -32435,11 +32452,11 @@ static int ds4_gpu_encode_mul_mv_slots6_sum6(
     id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
     [enc setComputePipelineState:pipeline];
     [enc setBytes:args length:sizeof(*args) atIndex:0];
-    for (uint32_t i = 0; i < 6; i++) {
+    for (uint32_t i = 0; i < (uint32_t)args->nei0; i++) {
         [enc setBuffer:src0[i] offset:src0_off[i] atIndex:1 + i];
     }
-    [enc setBuffer:src1 offset:src1_off atIndex:7];
-    [enc setBuffer:dst  offset:dst_off  atIndex:8];
+    [enc setBuffer:src1 offset:src1_off atIndex:1u + (NSUInteger)args->nei0];
+    [enc setBuffer:dst  offset:dst_off  atIndex:2u + (NSUInteger)args->nei0];
     if (threadgroup_bytes != 0) {
         [enc setThreadgroupMemoryLength:threadgroup_bytes atIndex:0];
     }
@@ -40719,7 +40736,10 @@ int ds4_gpu_routed_moe_one_tensor(
         }
         const bool direct_down_sum =
             !g_quality_mode &&
-            (n_expert == 6 || (n_expert == 8 && g_tp_split_world == 2)) &&
+            (n_expert == 6 ||
+             (n_expert == 8 && (g_tp_split_world == 2 ||
+              (g_ssd_streaming_mode && gate_type == DS4_METAL_TENSOR_MXFP4 &&
+               down_type == DS4_METAL_TENSOR_MXFP4)))) &&
             n_tokens == 1 &&
             down_sum6_pipeline != nil;
 
@@ -41036,18 +41056,22 @@ int ds4_gpu_routed_moe_one_tensor(
             g_moe_mul_mv_slots6_iq2_xxs_pair_swiglu_pipeline != nil &&
             g_moe_mul_mv_slots6_q2_k_sum6_pipeline != nil &&
             getenv("DS4_METAL_DISABLE_IQ2_SELECTED_EXPERT_VIEWS") == NULL;
+        const bool mxfp4_slots_ready =
+            (n_expert == 6 && g_moe_mul_mv_slots6_mxfp4_pair_swiglu_pipeline &&
+             g_moe_mul_mv_slots6_mxfp4_sum6_pipeline) ||
+            (n_expert == 8 && g_moe_mul_mv_slots8_mxfp4_pair_swiglu_pipeline &&
+             g_moe_mul_mv_slots8_mxfp4_sum8_pipeline);
         const bool use_mxfp4_selected_slots =
             !force_resident &&
             g_ssd_streaming_mode &&
             gate_type == DS4_METAL_TENSOR_MXFP4 &&
             down_type == DS4_METAL_TENSOR_MXFP4 &&
-            n_expert == 6 &&
+            (n_expert == 6 || n_expert == 8) &&
             n_tokens == 1 &&
             n_total_expert >= 128 &&
             fuse_pair_swiglu &&
             direct_down_sum &&
-            g_moe_mul_mv_slots6_mxfp4_pair_swiglu_pipeline != nil &&
-            g_moe_mul_mv_slots6_mxfp4_sum6_pipeline != nil &&
+            mxfp4_slots_ready &&
             getenv("DS4_METAL_DISABLE_MXFP4_SELECTED_EXPERT_VIEWS") == NULL;
         const bool use_iq2_stream_addr_table =
             !force_resident &&
@@ -41065,12 +41089,16 @@ int ds4_gpu_routed_moe_one_tensor(
             use_mxfp4_selected_slots || use_iq2_stream_addr_table;
         id<MTLComputePipelineState> slots_pair_swiglu_pipeline =
             use_iq2_selected_slots ? g_moe_mul_mv_slots6_iq2_xxs_pair_swiglu_pipeline :
-            (use_mxfp4_selected_slots ? g_moe_mul_mv_slots6_mxfp4_pair_swiglu_pipeline :
-            g_moe_mul_mv_slots6_q4_k_pair_swiglu_pipeline);
-        id<MTLComputePipelineState> slots_sum6_pipeline =
+            (use_mxfp4_selected_slots ?
+                (n_expert == 8 ? g_moe_mul_mv_slots8_mxfp4_pair_swiglu_pipeline :
+                                 g_moe_mul_mv_slots6_mxfp4_pair_swiglu_pipeline) :
+                g_moe_mul_mv_slots6_q4_k_pair_swiglu_pipeline);
+        id<MTLComputePipelineState> slots_sum_pipeline =
             use_iq2_selected_slots ? g_moe_mul_mv_slots6_q2_k_sum6_pipeline :
-            (use_mxfp4_selected_slots ? g_moe_mul_mv_slots6_mxfp4_sum6_pipeline :
-            g_moe_mul_mv_slots6_q4_k_sum6_pipeline);
+            (use_mxfp4_selected_slots ?
+                (n_expert == 8 ? g_moe_mul_mv_slots8_mxfp4_sum8_pipeline :
+                                 g_moe_mul_mv_slots6_mxfp4_sum6_pipeline) :
+                g_moe_mul_mv_slots6_q4_k_sum6_pipeline);
         const char *selected_profile_env = getenv("DS4_METAL_SELECTED_PROFILE");
         if (!selected_profile_env) {
             selected_profile_env = getenv("DS4_METAL_Q4_SELECTED_PROFILE");
@@ -42590,7 +42618,7 @@ int ds4_gpu_routed_moe_one_tensor(
                               stream_slot_entries,
                               n_expert,
                               0)) &&
-                     ds4_gpu_encode_mul_mv_slots6_pair_swiglu(cb,
+                     ds4_gpu_encode_mul_mv_slots_pair_swiglu(cb,
                                                               slots_pair_swiglu_pipeline,
                                                               &gate_args,
                                                               &act_args,
@@ -42930,8 +42958,8 @@ int ds4_gpu_routed_moe_one_tensor(
                               stream_slot_entries,
                               n_expert,
                               0)) &&
-                     ds4_gpu_encode_mul_mv_slots6_sum6(cb,
-                                                       slots_sum6_pipeline,
+                     ds4_gpu_encode_mul_mv_slots_sum(cb,
+                                                       slots_sum_pipeline,
                                                        &down_args,
                                                        down_slot_bufs,
                                                        down_slot_offsets,
@@ -50525,4 +50553,509 @@ int ds4_gpu_qwen4_hc_mix_rows_tensor(ds4_gpu_tensor *mixed, const ds4_gpu_tensor
     }
     return qwen4_dispatch(QWEN4_K_HC_MIX_ROWS, &args, sizeof(args), b, 3,
                           MTLSizeMake((n_embd + 255) / 256, n_tokens, 1), MTLSizeMake(256, 1, 1), 0);
+}
+
+/* MiMo V2.6 Flash attention (metal/mimo2.metal).  Every wrapper joins the
+ * active command batch; the split partials live in a grow-only scratch whose
+ * replaced buffers stay alive until the batch completes. */
+
+enum {
+    MIMO2_K_QKV_ROPE_CACHE = 0,
+    MIMO2_K_KV_COMMIT,
+    MIMO2_K_ATTN_K6_V4,
+    MIMO2_K_ATTN_K2_V1,
+    MIMO2_K_ATTN_MERGE_V4,
+    MIMO2_K_ATTN_MERGE_V1,
+    MIMO2_K_ATTN_MM_K192_V128,
+    MIMO2_K_ATTN_MM_K64_V32,
+    MIMO2_K_COUNT,
+};
+
+static const char *const mimo2_kernel_names[MIMO2_K_COUNT] = {
+    "kernel_mimo2_qkv_rope_cache",
+    "kernel_mimo2_kv_commit",
+    "kernel_mimo2_attn_k6_v4",
+    "kernel_mimo2_attn_k2_v1",
+    "kernel_mimo2_attn_merge_v4",
+    "kernel_mimo2_attn_merge_v1",
+    "kernel_mimo2_attn_mm_k192_v128",
+    "kernel_mimo2_attn_mm_k64_v32",
+};
+
+#define MIMO2_ATTN_NSG 4          /* must match metal/mimo2.metal */
+#define MIMO2_ATTN_HPS 4
+#define MIMO2_ATTN_MAX_SPLITS 64
+#define MIMO2_ATTN_SPLIT_GROUPS 1024u  /* (token, kv head, split) groups worth splitting keys for */
+#define MIMO2_MM_NSG 4                 /* must match metal/mimo2.metal */
+#define MIMO2_MM_ROWS 32
+#define MIMO2_MM_C 32
+
+typedef struct {
+    uint32_t n_tokens, pos0, cache_cap, n_head, n_kv, key_dim, value_dim, rot_dim;
+    float value_scale;
+    uint32_t store_from, pad0, pad1;
+    float freq[64];
+} mimo2_qkv_args;
+
+typedef struct {
+    uint32_t n_tokens, pos0, cache_cap, n_head, n_kv, window, n_splits, keys_per_split;
+    float scale;
+    uint32_t has_sinks, has_cur, pad0;
+} mimo2_attn_args;
+
+static id<MTLComputePipelineState> g_mimo2_pipelines[MIMO2_K_COUNT];
+static id<MTLBuffer> g_mimo2_attn_part_buffer;
+static NSUInteger g_mimo2_attn_part_bytes;
+
+static void mimo2_release_scratch(void) {
+    g_mimo2_attn_part_buffer = nil;
+    g_mimo2_attn_part_bytes = 0;
+    for (unsigned i = 0; i < MIMO2_K_COUNT; i++) g_mimo2_pipelines[i] = nil;
+}
+
+typedef struct {
+    id<MTLBuffer> buf;
+    NSUInteger    off;
+} mimo2_bind;
+
+static bool mimo2_bind_tensor(mimo2_bind *b, const ds4_gpu_tensor *t, uint64_t min_bytes, const char *what) {
+    if (!t || !ds4_gpu_tensor_buffer(t) || ds4_gpu_tensor_bytes(t) < min_bytes) {
+        fprintf(stderr, "ds4: MiMo %s buffer is missing or undersized (%" PRIu64 " < %" PRIu64 ")\n",
+                what, t ? ds4_gpu_tensor_bytes(t) : 0, min_bytes);
+        return false;
+    }
+    b->buf = ds4_gpu_tensor_buffer(t);
+    b->off = ds4_gpu_tensor_offset(t);
+    return true;
+}
+
+/* Encode one dispatch of a lazily resolved kernel into the active batch. */
+static int metal_family_dispatch(id<MTLComputePipelineState> __strong *pipeline, const char *name,
+                                 const char *source_env, const void *args, size_t args_len,
+                                 const mimo2_bind *binds, int n_binds, MTLSize grid, MTLSize tg,
+                                 NSUInteger tg_mem) {
+    if (!g_initialized && !ds4_gpu_init()) return 0;
+    @autoreleasepool {
+        if (!*pipeline) {
+            *pipeline = ds4_gpu_get_pipeline(name);
+            if (!*pipeline) {
+                fprintf(stderr, "ds4: kernel '%s' is absent from the compiled Metal sources "
+                        "(run from the matching checkout or set %s)\n", name, source_env);
+                return 0;
+            }
+        }
+        int owned = 0;
+        id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
+        if (!cb) return 0;
+        id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
+        /* A concurrent batch section does not order dispatches; attention
+         * reads the stored rows, the merge the tile's partials. */
+        if (enc.dispatchType == MTLDispatchTypeConcurrent)
+            [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [enc setComputePipelineState:*pipeline];
+        [enc setBytes:args length:args_len atIndex:0];
+        for (int i = 0; i < n_binds; i++)
+            [enc setBuffer:binds[i].buf offset:binds[i].off atIndex:(NSUInteger)(i + 1)];
+        if (tg_mem) [enc setThreadgroupMemoryLength:tg_mem atIndex:0];
+        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        ds4_gpu_end_compute_encoder(cb, enc);
+        return ds4_gpu_finish_command_buffer(cb, owned, name);
+    }
+}
+
+static int mimo2_dispatch(int kernel, const void *args, size_t args_len,
+                          const mimo2_bind *binds, int n_binds, MTLSize grid, MTLSize tg,
+                          NSUInteger tg_mem) {
+    return metal_family_dispatch(&g_mimo2_pipelines[kernel], mimo2_kernel_names[kernel],
+                                 "DS4_METAL_MIMO2_SOURCE", args, args_len, binds, n_binds,
+                                 grid, tg, tg_mem);
+}
+
+static bool mimo2_bind_caches(mimo2_bind *kb, mimo2_bind *vb,
+                              const ds4_gpu_tensor *key_cache, const ds4_gpu_tensor *value_cache,
+                              uint32_t cache_cap, uint32_t n_kv, uint32_t key_dim, uint32_t value_dim) {
+    return mimo2_bind_tensor(kb, key_cache, (uint64_t)cache_cap * n_kv * key_dim * 2u, "key cache") &&
+           mimo2_bind_tensor(vb, value_cache, (uint64_t)cache_cap * n_kv * value_dim * 2u, "value cache");
+}
+
+int ds4_gpu_mimo2_qkv_rope_cache_tensor(
+        ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
+        ds4_gpu_tensor *key_cache, ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *qkv,
+        uint32_t n_tokens, uint32_t pos0, uint32_t cache_cap,
+        uint32_t n_head, uint32_t n_kv, uint32_t key_dim, uint32_t value_dim,
+        uint32_t rot_dim, float value_scale, const float *rope_freq) {
+    const bool store = key_cache != NULL;
+    if (n_tokens == 0 || n_head == 0 || n_kv == 0 || key_dim == 0 || value_dim == 0 ||
+        key_dim > 1024u || value_dim > key_dim || (rot_dim & 1u) != 0 || rot_dim > key_dim ||
+        rot_dim / 2u > 64u || (rot_dim != 0 && !rope_freq) || !isfinite(value_scale) ||
+        (key_cache == NULL) != (value_cache == NULL)) {
+        fprintf(stderr, "ds4: MiMo qkv/rope arguments are unsupported (heads %u/%u, dims %u/%u, rot %u)\n",
+                n_head, n_kv, key_dim, value_dim, rot_dim);
+        return 0;
+    }
+    if (cache_cap == 0 || (uint64_t)pos0 + n_tokens > UINT32_MAX) {
+        fprintf(stderr, "ds4: MiMo qkv chunk of %u rows at %u exceeds the position range (cap %u)\n",
+                n_tokens, pos0, cache_cap);
+        return 0;
+    }
+    mimo2_qkv_args args = { n_tokens, pos0, cache_cap, n_head, n_kv, key_dim, value_dim, rot_dim,
+                            value_scale, 0, 0, 0, {0} };
+    /* Only the last cache_cap rows survive a chunk longer than the ring. */
+    args.store_from = !store ? n_tokens : n_tokens > cache_cap ? n_tokens - cache_cap : 0u;
+    for (uint32_t i = 0; i < rot_dim / 2u; i++) args.freq[i] = rope_freq[i];
+    const uint64_t T = n_tokens, f32 = sizeof(float);
+    const uint64_t row = (uint64_t)n_head * key_dim + (uint64_t)n_kv * (key_dim + value_dim);
+    mimo2_bind b[6];
+    if (!mimo2_bind_tensor(&b[0], qkv, T * row * f32, "fused qkv") ||
+        !mimo2_bind_tensor(&b[1], q, T * n_head * key_dim * f32, "q") ||
+        !mimo2_bind_tensor(&b[2], k, T * n_kv * key_dim * f32, "k") ||
+        !mimo2_bind_tensor(&b[3], v, T * n_kv * value_dim * f32, "v")) {
+        return 0;
+    }
+    if (store) {
+        if (!mimo2_bind_caches(&b[4], &b[5], key_cache, value_cache, cache_cap, n_kv, key_dim, value_dim))
+            return 0;
+    } else {
+        b[4] = b[2];
+        b[5] = b[3];
+    }
+    const NSUInteger threads = ((NSUInteger)key_dim + 31u) & ~(NSUInteger)31u;
+    return mimo2_dispatch(MIMO2_K_QKV_ROPE_CACHE, &args, sizeof(args), b, 6,
+                          MTLSizeMake(n_head + 2u * n_kv, n_tokens, 1), MTLSizeMake(threads, 1, 1), 0);
+}
+
+int ds4_gpu_mimo2_kv_commit_tensor(
+        ds4_gpu_tensor *key_cache, ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        uint32_t n_tokens, uint32_t pos0, uint32_t cache_cap,
+        uint32_t n_kv, uint32_t key_dim, uint32_t value_dim) {
+    if (n_tokens == 0 || n_kv == 0 || key_dim == 0 || value_dim == 0 || key_dim > 1024u ||
+        value_dim > 1024u || cache_cap == 0 || (uint64_t)pos0 + n_tokens > UINT32_MAX) {
+        fprintf(stderr, "ds4: MiMo kv commit arguments are unsupported (%u rows at %u, cap %u)\n",
+                n_tokens, pos0, cache_cap);
+        return 0;
+    }
+    const uint32_t stored = n_tokens < cache_cap ? n_tokens : cache_cap;
+    mimo2_qkv_args args = { n_tokens, pos0, cache_cap, 0, n_kv, key_dim, value_dim, 0,
+                            1.0f, n_tokens - stored, 0, 0, {0} };
+    const uint64_t T = n_tokens, f32 = sizeof(float);
+    mimo2_bind b[4];
+    if (!mimo2_bind_tensor(&b[0], k, T * n_kv * key_dim * f32, "staged k") ||
+        !mimo2_bind_tensor(&b[1], v, T * n_kv * value_dim * f32, "staged v") ||
+        !mimo2_bind_caches(&b[2], &b[3], key_cache, value_cache, cache_cap, n_kv, key_dim, value_dim)) {
+        return 0;
+    }
+    const uint32_t width = key_dim > value_dim ? key_dim : value_dim;
+    const NSUInteger threads = ((NSUInteger)width + 31u) & ~(NSUInteger)31u;
+    return mimo2_dispatch(MIMO2_K_KV_COMMIT, &args, sizeof(args), b, 4,
+                          MTLSizeMake(2u * n_kv, stored, 1), MTLSizeMake(threads, 1, 1), 0);
+}
+
+int ds4_gpu_mimo2_attention_tensor(
+        ds4_gpu_tensor *heads, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *key_cache, const ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *k_cur, const ds4_gpu_tensor *v_cur,
+        const ds4_gpu_tensor *sinks,
+        uint32_t n_tokens, uint32_t pos0, uint32_t cache_cap,
+        uint32_t n_head, uint32_t n_kv, uint32_t key_dim, uint32_t value_dim,
+        uint32_t sliding_window, float scale) {
+    int kt, km, kmm;
+    if (key_dim == 192u && value_dim == 128u) {
+        kt = MIMO2_K_ATTN_K6_V4;
+        km = MIMO2_K_ATTN_MERGE_V4;
+        kmm = MIMO2_K_ATTN_MM_K192_V128;
+    } else if (key_dim == 64u && value_dim == 32u) {
+        kt = MIMO2_K_ATTN_K2_V1;
+        km = MIMO2_K_ATTN_MERGE_V1;
+        kmm = MIMO2_K_ATTN_MM_K64_V32;
+    } else {
+        fprintf(stderr, "ds4: MiMo attention supports K/V head dims 192/128 and 64/32, not %u/%u\n",
+                key_dim, value_dim);
+        return 0;
+    }
+    if (n_tokens == 0 || n_kv == 0 || n_head % n_kv != 0 ||
+        n_head / n_kv > MIMO2_ATTN_NSG * MIMO2_ATTN_HPS || !isfinite(scale)) {
+        fprintf(stderr, "ds4: MiMo attention head layout %u/%u is unsupported\n", n_head, n_kv);
+        return 0;
+    }
+    const bool has_cur = k_cur != NULL;
+    if ((k_cur == NULL) != (v_cur == NULL)) {
+        fprintf(stderr, "ds4: MiMo attention needs both staged k and v, or neither\n");
+        return 0;
+    }
+    const uint64_t end = (uint64_t)pos0 + n_tokens;
+    if (cache_cap == 0 || end > UINT32_MAX) {
+        fprintf(stderr, "ds4: MiMo attention over %u rows at %u exceeds the position range\n", n_tokens, pos0);
+        return 0;
+    }
+    if (has_cur) {
+        /* Ring rows hold the positions before pos0; a query reaches back
+         * sliding_window - 1 positions, so the ring must cover that. */
+        if (sliding_window == 0 || (uint64_t)cache_cap + 1u < sliding_window) {
+            fprintf(stderr, "ds4: MiMo staged attention needs a sliding window within the ring "
+                    "(cap %u, window %u)\n", cache_cap, sliding_window);
+            return 0;
+        }
+    } else {
+        /* The chunk's rows were stored before this call: every row a query
+         * reads must still hold its own position. */
+        const bool no_wrap = end <= cache_cap;
+        const bool window_fits = sliding_window != 0 &&
+            (uint64_t)cache_cap >= (uint64_t)sliding_window + n_tokens - 1u;
+        if (!no_wrap && !window_fits) {
+            fprintf(stderr, "ds4: MiMo attention over %u rows at %u needs cache rows the chunk "
+                    "overwrote (cap %u, window %u)\n", n_tokens, pos0, cache_cap, sliding_window);
+            return 0;
+        }
+    }
+    const uint32_t max_keys = sliding_window != 0 && end > sliding_window ?
+        sliding_window : (uint32_t)end;
+    const uint32_t split_keys = (uint32_t)ds4_gpu_env_u64("DS4_MIMO2_ATTN_SPLIT_KEYS", 32u, 1u, 1u << 20);
+    uint32_t n_splits = (max_keys + split_keys - 1u) / split_keys;
+    const uint64_t groups = (uint64_t)n_tokens * n_kv;
+    const uint32_t split_cap = groups >= MIMO2_ATTN_SPLIT_GROUPS ? 1u :
+        (uint32_t)(MIMO2_ATTN_SPLIT_GROUPS / groups);
+    if (n_splits > split_cap) n_splits = split_cap;
+    if (n_splits > MIMO2_ATTN_MAX_SPLITS) n_splits = MIMO2_ATTN_MAX_SPLITS;
+    if (n_splits == 0) n_splits = 1;
+    mimo2_attn_args args = { n_tokens, pos0, cache_cap, n_head, n_kv, sliding_window, n_splits,
+                             (max_keys + n_splits - 1u) / n_splits, scale,
+                             sinks ? 1u : 0u, has_cur ? 1u : 0u, 0 };
+
+    const uint64_t T = n_tokens, f32 = sizeof(float);
+    mimo2_bind b[8];
+    if (!mimo2_bind_tensor(&b[0], q, T * n_head * key_dim * f32, "attention q") ||
+        !mimo2_bind_caches(&b[1], &b[2], key_cache, value_cache, cache_cap, n_kv, key_dim, value_dim) ||
+        !mimo2_bind_tensor(&b[6], heads, T * n_head * value_dim * f32, "attention heads")) {
+        return 0;
+    }
+    if (has_cur) {
+        if (!mimo2_bind_tensor(&b[3], k_cur, T * n_kv * key_dim * f32, "staged k") ||
+            !mimo2_bind_tensor(&b[4], v_cur, T * n_kv * value_dim * f32, "staged v")) {
+            return 0;
+        }
+    } else {
+        b[3] = b[0];
+        b[4] = b[0];
+    }
+    if (sinks) {
+        if (!mimo2_bind_tensor(&b[5], sinks, (uint64_t)n_head * f32, "attention sinks")) return 0;
+    } else {
+        b[5] = b[0];
+    }
+    /* Enough (token, kv head) groups to fill the GPU without key splits: the
+     * matrix kernel shares each K/V tile across 32 (token, head) rows.  Short
+     * chunks keep the decode arithmetic.  DS4_MIMO2_ATTN_MM_GROUPS sets the
+     * threshold, 0 disables the matrix kernel. */
+    const uint32_t group = n_head / n_kv;
+    const uint64_t mm_groups = ds4_gpu_env_u64("DS4_MIMO2_ATTN_MM_GROUPS", MIMO2_ATTN_SPLIT_GROUPS, 0u, UINT32_MAX);
+    if (mm_groups != 0 && groups >= mm_groups && MIMO2_MM_ROWS % group == 0) {
+        const uint32_t tpb = MIMO2_MM_ROWS / group;
+        const NSUInteger tg_mem =
+            (NSUInteger)MIMO2_MM_C * (key_dim + 8u) * 2u + (NSUInteger)MIMO2_MM_C * (value_dim + 8u) * 2u +
+            (NSUInteger)MIMO2_MM_NSG * 8u * MIMO2_MM_C * (4u + 2u) + (NSUInteger)MIMO2_MM_NSG * 64u * 4u;
+        args.n_splits = 1;
+        return mimo2_dispatch(kmm, &args, sizeof(args), b, 7,
+                              MTLSizeMake((n_tokens + tpb - 1u) / tpb, n_kv, 1),
+                              MTLSizeMake(32u * MIMO2_MM_NSG, 1, 1), tg_mem);
+    }
+    if (n_splits > 1) {
+        const uint64_t part_bytes = T * n_head * n_splits * (2u + value_dim) * f32;
+        if (!g_initialized && !ds4_gpu_init()) return 0;
+        if (g_mimo2_attn_part_buffer && g_mimo2_attn_part_bytes < part_bytes) {
+            /* Dispatches already encoded in this batch may still use it. */
+            [g_transient_buffers addObject:g_mimo2_attn_part_buffer];
+            g_mimo2_attn_part_buffer = nil;
+            g_mimo2_attn_part_bytes = 0;
+        }
+        if (!ds4_gpu_ensure_scratch_buffer(&g_mimo2_attn_part_buffer, &g_mimo2_attn_part_bytes,
+                                           (NSUInteger)part_bytes, "ds4_mimo2_attn_partials")) {
+            return 0;
+        }
+        b[7].buf = g_mimo2_attn_part_buffer;
+        b[7].off = 0;
+    } else {
+        b[7] = b[6];
+    }
+    if (!mimo2_dispatch(kt, &args, sizeof(args), b, 8,
+                        MTLSizeMake(n_splits, n_kv, n_tokens), MTLSizeMake(32u * MIMO2_ATTN_NSG, 1, 1), 0)) {
+        return 0;
+    }
+    if (n_splits == 1) return 1;
+    const mimo2_bind mb[3] = { b[7], b[5], b[6] };
+    return mimo2_dispatch(km, &args, sizeof(args), mb, 3,
+                          MTLSizeMake(n_head, n_tokens, 1), MTLSizeMake(32, 1, 1), 0);
+}
+
+/* DFlash block drafter (metal/dflash.metal).  Same batching contract as the
+ * MiMo wrappers above. */
+
+enum {
+    DFLASH_K_CAPTURE_ROWS = 0,
+    DFLASH_K_HEAD_NORM_ROPE,
+    DFLASH_K_STORE_KV,
+    DFLASH_K_ATTENTION,
+    DFLASH_K_ARGMAX_PROB,
+    DFLASH_K_COUNT,
+};
+
+static const char *const dflash_kernel_names[DFLASH_K_COUNT] = {
+    "kernel_dflash_capture_rows",
+    "kernel_dflash_head_norm_rope",
+    "kernel_dflash_store_kv",
+    "kernel_dflash_attention",
+    "kernel_dflash_argmax_prob",
+};
+
+#define DFLASH_ATTN_MAX_KEYS 2048u  /* must match metal/dflash.metal */
+
+static id<MTLComputePipelineState> g_dflash_pipelines[DFLASH_K_COUNT];
+
+static void dflash_release_pipelines(void) {
+    for (unsigned i = 0; i < DFLASH_K_COUNT; i++) g_dflash_pipelines[i] = nil;
+}
+
+static int dflash_dispatch(int kernel, const void *args, size_t args_len,
+                           const mimo2_bind *binds, int n_binds, MTLSize grid, MTLSize tg) {
+    return metal_family_dispatch(&g_dflash_pipelines[kernel], dflash_kernel_names[kernel],
+                                 "DS4_METAL_DFLASH_SOURCE", args, args_len, binds, n_binds,
+                                 grid, tg, 0);
+}
+
+typedef struct {
+    uint32_t n_rows, n_embd, n_slots, slot, src_row0, dst_row0;
+} dflash_capture_args;
+
+typedef struct {
+    uint32_t n_rows, n_heads, head_dim, rot_dim, pos0, pad0;
+    float eps, pad1;
+    float freq[64];
+} dflash_head_norm_rope_args;
+
+typedef struct {
+    uint32_t n_rows, pos0, cache_cap, width;
+    float value_scale;
+    uint32_t pad0, pad1, pad2;
+} dflash_store_kv_args;
+
+typedef struct {
+    uint32_t n_rows, n_head, n_kv, head_dim, ctx_lo, ctx_hi, cache_cap, pos0, window, has_sinks;
+    float scale;
+    uint32_t pad0;
+} dflash_attn_args;
+
+typedef struct {
+    uint32_t n_rows, n_vocab;
+} dflash_argmax_args;
+
+int ds4_gpu_dflash_capture_rows_tensor(
+        ds4_gpu_tensor *features, const ds4_gpu_tensor *src,
+        uint32_t src_row0, uint32_t dst_row0, uint32_t n_rows,
+        uint32_t n_embd, uint32_t n_slots, uint32_t slot) {
+    if (n_rows == 0 || n_embd == 0 || slot >= n_slots) return 0;
+    const uint64_t f32 = sizeof(float);
+    mimo2_bind b[2];
+    if (!mimo2_bind_tensor(&b[0], src, ((uint64_t)src_row0 + n_rows) * n_embd * f32, "DFlash capture source") ||
+        !mimo2_bind_tensor(&b[1], features, ((uint64_t)dst_row0 + n_rows) * n_slots * n_embd * f32,
+                           "DFlash features")) {
+        return 0;
+    }
+    const dflash_capture_args args = { n_rows, n_embd, n_slots, slot, src_row0, dst_row0 };
+    return dflash_dispatch(DFLASH_K_CAPTURE_ROWS, &args, sizeof(args), b, 2,
+                           MTLSizeMake((n_embd + 255u) / 256u, n_rows, 1), MTLSizeMake(256, 1, 1));
+}
+
+int ds4_gpu_dflash_head_norm_rope_tensor(
+        ds4_gpu_tensor *x, const ds4_gpu_tensor *weight,
+        uint32_t n_rows, uint32_t n_heads, uint32_t head_dim, uint32_t rot_dim,
+        uint32_t pos0, float eps, const float *rope_freq) {
+    if (n_rows == 0 || n_heads == 0 || head_dim == 0 || head_dim > 256u ||
+        rot_dim > head_dim || (rot_dim & 1u) || rot_dim > 128u || (rot_dim && !rope_freq)) {
+        fprintf(stderr, "ds4: DFlash head norm/RoPE layout %u/%u is unsupported\n", head_dim, rot_dim);
+        return 0;
+    }
+    const uint64_t f32 = sizeof(float);
+    mimo2_bind b[2];
+    if (!mimo2_bind_tensor(&b[0], x, (uint64_t)n_rows * n_heads * head_dim * f32, "DFlash q/k rows") ||
+        !mimo2_bind_tensor(&b[1], weight, (uint64_t)head_dim * f32, "DFlash head norm weight")) {
+        return 0;
+    }
+    dflash_head_norm_rope_args args = { n_rows, n_heads, head_dim, rot_dim, pos0, 0, eps, 0.0f, {0} };
+    for (uint32_t i = 0; i < rot_dim / 2u; i++) args.freq[i] = rope_freq[i];
+    const NSUInteger threads = ((NSUInteger)head_dim + 31u) & ~(NSUInteger)31u;
+    return dflash_dispatch(DFLASH_K_HEAD_NORM_ROPE, &args, sizeof(args), b, 2,
+                           MTLSizeMake(n_heads, n_rows, 1), MTLSizeMake(threads, 1, 1));
+}
+
+int ds4_gpu_dflash_store_kv_tensor(
+        ds4_gpu_tensor *key_cache, ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        uint32_t n_rows, uint32_t pos0, uint32_t cache_cap, uint32_t width, float value_scale) {
+    if (n_rows == 0 || width == 0 || cache_cap == 0 || n_rows > cache_cap) return 0;
+    const uint64_t f32 = sizeof(float), f16 = sizeof(uint16_t);
+    mimo2_bind b[4];
+    if (!mimo2_bind_tensor(&b[0], k, (uint64_t)n_rows * width * f32, "DFlash k rows") ||
+        !mimo2_bind_tensor(&b[1], v, (uint64_t)n_rows * width * f32, "DFlash v rows") ||
+        !mimo2_bind_tensor(&b[2], key_cache, (uint64_t)cache_cap * width * f16, "DFlash key cache") ||
+        !mimo2_bind_tensor(&b[3], value_cache, (uint64_t)cache_cap * width * f16, "DFlash value cache")) {
+        return 0;
+    }
+    const dflash_store_kv_args args = { n_rows, pos0, cache_cap, width, value_scale, 0, 0, 0 };
+    return dflash_dispatch(DFLASH_K_STORE_KV, &args, sizeof(args), b, 4,
+                           MTLSizeMake((width + 255u) / 256u, n_rows, 1), MTLSizeMake(256, 1, 1));
+}
+
+int ds4_gpu_dflash_attention_tensor(
+        ds4_gpu_tensor *heads, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *key_ring, const ds4_gpu_tensor *value_ring,
+        uint32_t ring_cap, uint32_t ctx_lo, uint32_t ctx_hi,
+        const ds4_gpu_tensor *block_k, const ds4_gpu_tensor *block_v,
+        const ds4_gpu_tensor *sinks, uint32_t n_rows, uint32_t pos0,
+        uint32_t n_head, uint32_t n_kv, uint32_t head_dim, uint32_t window, float scale) {
+    if (n_rows == 0 || n_kv == 0 || n_head % n_kv != 0 || head_dim == 0 || head_dim > 256u ||
+        (head_dim & 3u) || ring_cap == 0 || window == 0 || ctx_lo > ctx_hi || ctx_hi > pos0 ||
+        ctx_hi - ctx_lo > ring_cap || (uint64_t)window + n_rows > DFLASH_ATTN_MAX_KEYS + 1u ||
+        !isfinite(scale)) {
+        fprintf(stderr, "ds4: DFlash attention layout is unsupported (heads %u/%u dim %u window %u rows %u "
+                        "ring %u ctx [%u,%u) pos %u)\n",
+                n_head, n_kv, head_dim, window, n_rows, ring_cap, ctx_lo, ctx_hi, pos0);
+        return 0;
+    }
+    const uint64_t f32 = sizeof(float), f16 = sizeof(uint16_t);
+    const uint64_t kv_row = (uint64_t)n_kv * head_dim;
+    mimo2_bind b[7];
+    if (!mimo2_bind_tensor(&b[0], q, (uint64_t)n_rows * n_head * head_dim * f32, "DFlash q") ||
+        !mimo2_bind_tensor(&b[1], key_ring, (uint64_t)ring_cap * kv_row * f16, "DFlash key ring") ||
+        !mimo2_bind_tensor(&b[2], value_ring, (uint64_t)ring_cap * kv_row * f16, "DFlash value ring") ||
+        !mimo2_bind_tensor(&b[3], block_k, (uint64_t)n_rows * kv_row * f16, "DFlash block k") ||
+        !mimo2_bind_tensor(&b[4], block_v, (uint64_t)n_rows * kv_row * f16, "DFlash block v") ||
+        !mimo2_bind_tensor(&b[6], heads, (uint64_t)n_rows * n_head * head_dim * f32, "DFlash heads")) {
+        return 0;
+    }
+    if (sinks) {
+        if (!mimo2_bind_tensor(&b[5], sinks, (uint64_t)n_head * f32, "DFlash sinks")) return 0;
+    } else {
+        b[5] = b[0];
+    }
+    const dflash_attn_args args = { n_rows, n_head, n_kv, head_dim, ctx_lo, ctx_hi, ring_cap, pos0,
+                                    window, sinks ? 1u : 0u, scale, 0 };
+    const NSUInteger threads = ((NSUInteger)head_dim + 31u) & ~(NSUInteger)31u;
+    return dflash_dispatch(DFLASH_K_ATTENTION, &args, sizeof(args), b, 7,
+                           MTLSizeMake(n_head, n_rows, 1), MTLSizeMake(threads, 1, 1));
+}
+
+int ds4_gpu_dflash_argmax_prob_tensor(
+        ds4_gpu_tensor *index, ds4_gpu_tensor *prob, const ds4_gpu_tensor *logits,
+        uint32_t n_rows, uint32_t n_vocab) {
+    if (n_rows == 0 || n_vocab == 0 || n_vocab > INT32_MAX) return 0;
+    mimo2_bind b[3];
+    if (!mimo2_bind_tensor(&b[0], logits, (uint64_t)n_rows * n_vocab * sizeof(float), "DFlash logits") ||
+        !mimo2_bind_tensor(&b[1], index, (uint64_t)n_rows * sizeof(int32_t), "DFlash argmax") ||
+        !mimo2_bind_tensor(&b[2], prob, (uint64_t)n_rows * sizeof(float), "DFlash probability")) {
+        return 0;
+    }
+    const dflash_argmax_args args = { n_rows, n_vocab };
+    return dflash_dispatch(DFLASH_K_ARGMAX_PROB, &args, sizeof(args), b, 3,
+                           MTLSizeMake(n_rows, 1, 1), MTLSizeMake(256, 1, 1));
 }

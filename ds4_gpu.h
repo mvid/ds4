@@ -3540,6 +3540,104 @@ int ds4_gpu_qwen4_mtp_stage_tensor(
 int ds4_gpu_qwen4_mtp_combine_tensor(
         ds4_gpu_tensor *R_out, const ds4_gpu_tensor *proj, uint32_t n_embd, uint32_t n_hc);
 
+/* MiMo V2.6 Flash attention (Metal only, metal/mimo2.metal).  Caches are f16
+ * [cache_cap][n_kv][key_dim] and [cache_cap][n_kv][value_dim]; absolute
+ * position p lives in row p % cache_cap.
+ *
+ * qkv_rope_cache: qkv is [n_tokens][n_head*key_dim + n_kv*key_dim +
+ * n_kv*value_dim] f32 (fused projection, canonical Q,K,V order).  Writes q
+ * [n_tokens][n_head][key_dim], k [n_tokens][n_kv][key_dim] and v
+ * [n_tokens][n_kv][value_dim] as f32, with rotate-half RoPE on the first
+ * rot_dim dims of q and k (angle = pos * rope_freq[i], rope_freq holds
+ * rot_dim/2 entries) and v multiplied by value_scale.  With both caches it
+ * also stores the last min(n_tokens, cache_cap) tokens' k/v rows; with both
+ * NULL it only stages q/k/v.
+ *
+ * attention: writes heads [n_tokens][n_head][value_dim] f32, causal
+ * attention of query pos0+t over the keys max(0, pos0+t-sliding_window+1) ..
+ * pos0+t (all keys when sliding_window is 0).  sinks, when non-NULL, is f32
+ * [n_head]: one extra softmax logit per head with no value.
+ *  - k_cur/v_cur NULL: every key comes from the caches, so the chunk must
+ *    already be stored and no row a query needs may have been overwritten
+ *    by a later row of the chunk: pos0 + n_tokens <= cache_cap, or
+ *    sliding_window > 0 and cache_cap >= sliding_window + n_tokens - 1.
+ *  - k_cur/v_cur given (the staged k/v of this chunk): keys at positions
+ *    >= pos0 come from them, rounded to f16 as the caches hold them, older
+ *    keys from the ring.  Requires sliding_window > 0 and cache_cap >=
+ *    sliding_window - 1; any n_tokens.
+ *
+ * kv_commit: stores the f16 k/v rows of the last min(n_tokens, cache_cap)
+ * tokens of a staged chunk at (pos0 + t) % cache_cap.
+ *
+ * All join the active command batch and return 1 on success. */
+int ds4_gpu_mimo2_qkv_rope_cache_tensor(
+        ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
+        ds4_gpu_tensor *key_cache, ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *qkv,
+        uint32_t n_tokens, uint32_t pos0, uint32_t cache_cap,
+        uint32_t n_head, uint32_t n_kv, uint32_t key_dim, uint32_t value_dim,
+        uint32_t rot_dim, float value_scale, const float *rope_freq);
+int ds4_gpu_mimo2_attention_tensor(
+        ds4_gpu_tensor *heads, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *key_cache, const ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *k_cur, const ds4_gpu_tensor *v_cur,
+        const ds4_gpu_tensor *sinks,
+        uint32_t n_tokens, uint32_t pos0, uint32_t cache_cap,
+        uint32_t n_head, uint32_t n_kv, uint32_t key_dim, uint32_t value_dim,
+        uint32_t sliding_window, float scale);
+int ds4_gpu_mimo2_kv_commit_tensor(
+        ds4_gpu_tensor *key_cache, ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        uint32_t n_tokens, uint32_t pos0, uint32_t cache_cap,
+        uint32_t n_kv, uint32_t key_dim, uint32_t value_dim);
+
+/* DFlash block drafter (Metal only, metal/dflash.metal).  All join the
+ * active command batch and return 1 on success.
+ *
+ * capture_rows: features[dst_row0 + r][slot][:] = src[src_row0 + r][:] for
+ * r < n_rows; features rows hold n_slots concatenated n_embd-wide pieces.
+ *
+ * head_norm_rope: in place on x [n_rows][n_heads][head_dim] f32: per-head
+ * RMSNorm with weight [head_dim] (f32 tensor), then rotate-half RoPE on the
+ * first rot_dim dims at position pos0 + row (angle = pos * rope_freq[i],
+ * rot_dim / 2 entries).  head_dim <= 256, rot_dim <= 128.
+ *
+ * store_kv: rows of k and v ([n_rows][width] f32) go to f16 caches
+ * [cache_cap][width] at row (pos0 + r) % cache_cap, v times value_scale.
+ *
+ * attention: heads [n_rows][n_head][head_dim] f32.  Query row t sits at
+ * position pos0 + t and attends, without a causal mask, to the ring keys at
+ * positions [max(ctx_lo, pos0 + t - window + 1), ctx_hi) (ring row p %
+ * ring_cap, ctx_hi <= pos0, ctx_hi - ctx_lo <= ring_cap) and to all n_rows
+ * block keys (f16 [n_rows][n_kv][head_dim]).  sinks, when non-NULL, is f32
+ * [n_head]: one extra softmax logit per head with no value.  Requires
+ * window + n_rows <= 2049 and head_dim % 4 == 0.
+ *
+ * argmax_prob: per row of logits [n_rows][n_vocab], the lowest index of the
+ * largest logit (int32) and its softmax probability (f32). */
+int ds4_gpu_dflash_capture_rows_tensor(
+        ds4_gpu_tensor *features, const ds4_gpu_tensor *src,
+        uint32_t src_row0, uint32_t dst_row0, uint32_t n_rows,
+        uint32_t n_embd, uint32_t n_slots, uint32_t slot);
+int ds4_gpu_dflash_head_norm_rope_tensor(
+        ds4_gpu_tensor *x, const ds4_gpu_tensor *weight,
+        uint32_t n_rows, uint32_t n_heads, uint32_t head_dim, uint32_t rot_dim,
+        uint32_t pos0, float eps, const float *rope_freq);
+int ds4_gpu_dflash_store_kv_tensor(
+        ds4_gpu_tensor *key_cache, ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        uint32_t n_rows, uint32_t pos0, uint32_t cache_cap, uint32_t width, float value_scale);
+int ds4_gpu_dflash_attention_tensor(
+        ds4_gpu_tensor *heads, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *key_ring, const ds4_gpu_tensor *value_ring,
+        uint32_t ring_cap, uint32_t ctx_lo, uint32_t ctx_hi,
+        const ds4_gpu_tensor *block_k, const ds4_gpu_tensor *block_v,
+        const ds4_gpu_tensor *sinks, uint32_t n_rows, uint32_t pos0,
+        uint32_t n_head, uint32_t n_kv, uint32_t head_dim, uint32_t window, float scale);
+int ds4_gpu_dflash_argmax_prob_tensor(
+        ds4_gpu_tensor *index, ds4_gpu_tensor *prob, const ds4_gpu_tensor *logits,
+        uint32_t n_rows, uint32_t n_vocab);
+
 #ifdef __cplusplus
 }
 #endif

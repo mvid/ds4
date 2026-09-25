@@ -1,0 +1,3018 @@
+===== DS4_IMATRIX_PROMPT agent-e81f7cc515bf agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+run the test suite<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+running 3 tests
+test parse_chat_request ... ok
+test render_chat_prompt_text ... ok
+test dsml_decode ... FAILED
+
+failures:
+    dsml_decode: assertion failed at tests/dsml.c:88
+<|im_end|><|im_start|>assistant
+Two passes, one failure in dsml_decode at tests/dsml.c:88. Open the file?<|im_end|><|im_start|>user
+what does sample_argmax do? read it<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+static int sample_argmax(const float *logits, int n) {
+    int best = 0;
+    float best_v = logits[0];
+    for (int i = 1; i < n; i++) {
+        if (logits[i] > best_v) {
+            best_v = logits[i];
+            best = i;
+        }
+    }
+    return best;
+}
+<|im_end|><|im_start|>assistant
+It picks the index of the largest logit by linear scan from index 1 forward, starting with index 0 as the initial best. No tie-breaker beyond first-seen.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-44d040dee943 source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain what this code does and identify the inference stage it belongs to.
+
+File: metal/bin.metal
+
+```metal
+T res = src0_ptr[i0];
+
+                if (FC_OP == 0) {
+                    FOR_UNROLL (short j = 0; j < FC_F; ++j) {
+                        res += src1_ptr[j][i10];
+                    }
+                }
+
+                if (FC_OP == 1) {
+                    FOR_UNROLL (short j = 0; j < FC_F; ++j) {
+                        res -= src1_ptr[j][i10];
+                    }
+                }
+
+                if (FC_OP == 2) {
+                    FOR_UNROLL (short j = 0; j < FC_F; ++j) {
+                        res *= src1_ptr[j][i10];
+                    }
+                }
+
+                if (FC_OP == 3) {
+                    FOR_UNROLL (short j = 0; j < FC_F; ++j) {
+                        res /= src1_ptr[j][i10];
+                    }
+                }
+
+                dst_ptr[i0] = res;
+            }
+        }
+    }
+
+#undef FC_OP
+#undef FC_F
+#undef FC_RB
+#undef FC_CB
+}
+
+typedef decltype(kernel_bin_fuse_impl<float, float, float>) kernel_bin_fuse_t;
+// Host-visible F32 binary op; function constants specialize it per use site.
+template [[host_name("kernel_bin_fuse_f32_f32_f32")]] kernel kernel_bin_fuse_t kernel_bin_fuse_impl<float, float, float>;
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-43607088790e source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain what this code does and identify the inference stage it belongs to.
+
+File: metal/dense.metal
+
+```metal
+f8x8, half, half2x4, simdgroup_half8x8, float4x4, 1, dequantize_f32, float, float4x4, float, float2x4>) mul_mm_t;
+
+// Host-visible prefill matmul variants for F16 and Q8_0 weights.
+template [[host_name("kernel_mul_mm_f16_f32")]]  kernel mul_mm_t kernel_mul_mm<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, half4x4, 1, dequantize_f16,  half,  half4x4,  float, float2x4>;
+template [[host_name("kernel_mul_mm_q8_0_f32")]] kernel mul_mm_t kernel_mul_mm<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, block_q8_0, 2, dequantize_q8_0, float, float4x4, float, float2x4>;
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-1f224f4bc2cc source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain what this code does and identify the inference stage it belongs to.
+
+File: ds4_server.c
+
+```c
+_duplicate_continued_boundary();
+    test_kv_cache_file_size_must_fit_budget();
+    test_sha1_bytes_hex_matches_known_vector();
+    test_kv_cache_lookup_uses_longest_text_prefix();
+    test_kv_cache_eviction_values_fresh_snapshots();
+    test_kv_cache_eviction_protects_current_store();
+    test_kv_cache_eviction_does_not_protect_oversize_current_store();
+    test_kv_cache_eviction_score_decays_stale_hits();
+    test_kv_cache_eviction_decayed_hits_tie_break_by_age();
+    test_kv_cache_eviction_keeps_aligned_continued_frontiers();
+}
+
+#ifndef DS4_SERVER_TEST_NO_MAIN
+int main(void) {
+    ds4_server_unit_tests_run();
+    if (test_failures) {
+        fprintf(stderr, "ds4-server tests: %d failure(s)\n", test_failures);
+        return 1;
+    }
+    puts("ds4-server tests: ok");
+    return 0;
+}
+#endif
+
+#endif
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-d93ab20252e3 source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Trova bug sottili e spiega quali invarianti dell'inferenza possono rompersi.
+
+File: metal/dsv4_rope.metal
+
+```metal
+));
+
+            *((device float *) (dst_base + j0*args.nb0)) = x0*cos_theta - x1*sin_theta;
+            *((device float *) (dst_base + j1*args.nb0)) = x0*sin_theta + x1*cos_theta;
+        } else {
+            if ((r & 1) != 0) {
+                continue;
+            }
+
+            const int ic = r/2;
+            const float theta = theta_base * pow(args.freq_base, inv_ndims*r);
+            const float freq_factor = args.src2 ? ((device const float *) src2)[ic] : 1.0f;
+
+            float cos_theta;
+            float sin_theta;
+            rope_yarn(theta/freq_factor, args.freq_scale, corr_dims, r, args.ext_factor, args.attn_factor, &cos_theta, &sin_theta);
+            if (args.inverse) {
+                sin_theta = -sin_theta;
+            }
+
+            const int j0 = n_nope + r;
+            const int j1 = j0 + 1;
+            const float x0 = *((device const float *) (src_base + j0*args.nb00));
+            const float x1 = *((device const float *) (src_base + j1*args.nb00));
+
+            *((device float *) (dst_base + j0*args.nb0)) = x0*cos_theta - x1*sin_theta;
+            *((device float *) (dst_base + j1*args.nb0)) = x0*sin_theta + x1*cos_theta;
+        }
+    }
+}
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-b67dc8b34f77 source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Suggest a minimal correctness-preserving optimization for this excerpt.
+
+File: metal/dsv4_kv.metal
+
+```metal
+}
+
+    const uint pos_mod = args.pos % args.ratio;
+    const uint dst_row = args.ratio == 4u ? args.ratio + pos_mod : pos_mod;
+    const uint dst = dst_row * args.width + gid;
+    const uint ape_i = pos_mod * args.width + gid;
+
+    float ape_v;
+    if (args.ape_type == 1u) {
+        ape_v = (float)(((device const half *)ape)[ape_i]);
+    } else {
+        ape_v = ((device const float *)ape)[ape_i];
+    }
+
+    state_kv[dst] = kv[gid];
+    state_score[dst] = score[gid] + ape_v;
+}
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-07e59f9db0fc agent nothink =====
+<|im_start|>system
+You are a coding agent operating in a local repository. Be terse. Use tools for filesystem inspection and edits; answer plain questions directly. Never narrate what you are about to do.<|im_end|><|im_start|>user
+find files in src/metal<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+src/core/file_000.c
+src/core/file_001.c
+src/core/file_002.c
+src/core/file_003.c
+src/core/file_004.c
+src/core/file_005.c
+src/core/file_006.c
+src/core/file_007.c
+src/core/file_008.c
+src/core/file_009.c
+src/core/file_010.c
+src/core/file_011.c
+src/core/file_012.c
+src/core/file_013.c
+src/core/file_014.c
+src/core/file_015.c
+src/core/file_016.c
+src/core/file_017.c
+src/core/file_018.c
+src/core/file_019.c
+src/core/file_020.c
+src/core/file_021.c
+src/core/file_022.c
+src/core/file_023.c
+src/core/file_024.c
+src/core/file_025.c
+src/core/file_026.c
+src/core/file_027.c
+src/core/file_028.c
+src/core/file_029.c
+src/core/file_030.c
+src/core/file_031.c
+src/core/file_032.c
+src/core/file_033.c
+src/core/file_034.c
+src/core/file_035.c
+src/core/file_036.c
+src/core/file_037.c
+src/core/file_038.c
+src/core/file_039.c
+src/core/file_040.c
+src/core/file_041.c
+src/core/file_042.c
+src/core/file_043.c
+src/core/file_044.c
+src/core/file_045.c
+src/core/file_046.c
+src/core/file_047.c
+src/core/file_048.c
+src/core/file_049.c
+src/core/file_050.c
+src/core/file_051.c
+src/core/file_052.c
+src/core/file_053.c
+src/core/file_054.c
+src/core/file_055.c
+src/core/file_056.c
+src/core/file_057.c
+src/core/file_058.c
+src/core/file_059.c
+src/core/file_060.c
+src/core/file_061.c
+src/core/file_062.c
+src/core/file_063.c
+src/metal/file_000.c
+src/metal/file_001.c
+src/metal/file_002.c
+src/metal/file_003.c
+src/metal/file_004.c
+src/metal/file_005.c
+src/metal/file_006.c
+src/metal/file_007.c
+src/metal/file_008.c
+src/metal/file_009.c
+src/metal/file_010.c
+src/metal/file_011.c
+src/metal/file_012.c
+src/metal/file_013.c
+src/metal/file_014.c
+src/metal/file_015.c
+src/metal/file_016.c
+src/metal/file_017.c
+src/metal/file_018.c
+src/metal/file_019.c
+src/metal/file_020.c
+src/metal/file_021.c
+src/metal/file_022.c
+src/metal/file_023.c
+src/metal/file_024.c
+src/metal/file_025.c
+src/metal/file_026.c
+src/metal/file_027.c
+src/metal/file_028.c
+src/metal/file_029.c
+src/metal/file_030.c
+src/metal/file_031.c
+src/metal/file_032.c
+src/metal/file_033.c
+src/metal/file_034.c
+src/metal/file_035.c
+src/metal/file_036.c
+src/metal/file_037.c
+src/metal/file_038.c
+src/metal/file_039.c
+src/metal/file_040.c
+src/metal/file_041.c
+src/metal/file_042.c
+src/metal/file_043.c
+src/metal/file_044.c
+src/metal/file_045.c
+src/metal/file_046.c
+src/metal/file_047.c
+src/metal/file_048.c
+src/metal/file_049.c
+src/metal/file_050.c
+src/metal/file_051.c
+src/metal/file_052.c
+src/metal/file_053.c
+src/metal/file_054.c
+src/metal/file_055.c
+src/metal/file_056.c
+src/metal/file_057.c
+src/metal/file_058.c
+src/metal/file_059.c
+src/metal/file_060.c
+src/metal/file_061.c
+src/metal/file_062.c
+src/metal/file_063.c
+src/io/file_000.c
+src/io/file_001.c
+src/io/file_002.c
+src/io/file_003.c
+src/io/file_004.c
+src/io/file_005.c
+src/io/file_006.c
+src/io/file_007.c
+src/io/file_008.c
+src/io/file_009.c
+src/io/file_010.c
+src/io/file_011.c
+src/io/file_012.c
+src/io/file_013.c
+src/io/file_014.c
+src/io/file_015.c
+src/io/file_016.c
+src/io/file_017.c
+src/io/file_018.c
+src/io/file_019.c
+src/io/file_020.c
+src/io/file_021.c
+src/io/file_022.c
+src/io/file_023.c
+src/io/file_024.c
+src/io/file_025.c
+src/io/file_026.c
+src/io/file_027.c
+src/io/file_028.c
+src/io/file_029.c
+src/io/file_030.c
+src/io/file_031.c
+src/io/file_032.c
+src/io/file_033.c
+src/io/file_034.c
+src/io/file_035.c
+src/io/file_036.c
+src/io/file_037.c
+src/io/file_038.c
+src/io/file_039.c
+src/io/file_040.c
+src/io/file_041.c
+src/io/file_042.c
+src/io/file_043.c
+src/io/file_044.c
+src/io/file_045.c
+src/io/file_046.c
+src/io/file_047.c
+src/io/file_048.c
+src/io/file_049.c
+src/io/file_050.c
+src/io/file_051.c
+src/io/file_052.c
+src/io/file_053.c
+src/io/file_054.c
+src/io/file_055.c
+src/io/file_056.c
+src/io/file_057.c
+src/io/file_058.c
+src/io/file_059.c
+src/io/file_060.c
+src/io/file_061.c
+src/io/file_062.c
+src/io/file_063.c
+src/test/file_000.c
+src/test/file_001.c
+src/test/file_002.c
+src/test/file_003.c
+src/test/file_004.c
+src/test/file_005.c
+src/test/file_006.c
+src/test/file_007.c
+src/test/file_008.c
+src/test/file_009.c
+src/test/file_010.c
+src/test/file_011.c
+src/test/file_012.c
+src/test/file_013.c
+src/test/file_014.c
+src/test/file_015.c
+src/test/file_016.c
+src/test/file_017.c
+src/test/file_018.c
+src/test/file_019.c
+src/test/file_020.c
+src/test/file_021.c
+src/test/file_022.c
+src/test/file_023.c
+src/test/file_024.c
+src/test/file_025.c
+src/test/file_026.c
+src/test/file_027.c
+src/test/file_028.c
+src/test/file_029.c
+src/test/file_030.c
+src/test/file_031.c
+src/test/file_032.c
+src/test/file_033.c
+src/test/file_034.c
+src/test/file_035.c
+src/test/file_036.c
+src/test/file_037.c
+src/test/file_038.c
+src/test/file_039.c
+src/test/file_040.c
+src/test/file_041.c
+src/test/file_042.c
+src/test/file_043.c
+src/test/file_044.c
+src/test/file_045.c
+src/test/file_046.c
+src/test/file_047.c
+src/test/file_048.c
+src/test/file_049.c
+src/test/file_050.c
+src/test/file_051.c
+src/test/file_052.c
+src/test/file_053.c
+src/test/file_054.c
+src/test/file_055.c
+src/test/file_056.c
+src/test/file_057.c
+src/test/file_058.c
+src/test/file_059.c
+src/test/file_060.c
+src/test/file_061.c
+src/test/file_062.c
+src/test/file_063.c<|im_end|><|im_start|>assistant
+256 files across src/core, src/metal, src/io, src/test. Want me to focus on src/metal?<|im_end|><|im_start|>user
+qual e la differenza tra prefill e decode?<|im_end|><|im_start|>assistant
+Il prefill elabora i token del prompt in matmul batch per riempire la KV cache; il decode procede un token alla volta usando lo stato cachato. Il prefill e limitato dalla banda di memoria sui prompt lunghi; il decode dal costo per token dell'attenzione e del routing MoE.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-9bcfd297a224 source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain what this code does and identify the inference stage it belongs to.
+
+File: metal/sum_rows.metal
+
+```metal
+s.ne00;
+            }
+        } else {
+            dst_row[0] = sum(sumf);
+        }
+    }
+
+#undef FC_OP
+}
+
+typedef decltype(kernel_sum_rows_impl<float, float>) kernel_sum_rows_t;
+
+// Host-visible F32 row reduction used by compressor pooling.
+template [[host_name("kernel_sum_rows_f32_f32")]] kernel kernel_sum_rows_t kernel_sum_rows_impl<float, float>;
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-87fd03a7448e source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Suggest a minimal correctness-preserving optimization for this excerpt.
+
+File: ds4_metal.m
+
+```c
+_hc) * sizeof(float) atIndex:7];
+        [enc setBuffer:outbuf offset:ds4_gpu_tensor_offset(out_hc) atIndex:8];
+        [enc setThreadgroupMemoryLength:mv_dispatch.smem atIndex:0];
+        [enc dispatchThreadgroups:MTLSizeMake(((NSUInteger)out_dim + (NSUInteger)mv_dispatch.nr0 - 1u) /
+                                              (NSUInteger)mv_dispatch.nr0,
+                                              1,
+                                              1)
+             threadsPerThreadgroup:MTLSizeMake(32, (NSUInteger)mv_dispatch.nsg, 1)];
+        ds4_gpu_end_compute_encoder(cb, enc);
+
+        if (!ds4_gpu_finish_command_buffer(cb, owned, "Q8 HC expand fused")) return 0;
+    }
+
+    return 1;
+}
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-05d100d628b0 source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Review this excerpt for correctness risks, memory lifetime issues, and performance bottlenecks.
+
+File: ds4.h
+
+```c
+yload helpers.  The server owns the outer file header and
+ * policy; the engine owns the DS4-specific serialized graph state. */
+uint64_t ds4_session_payload_bytes(ds4_session *s);
+int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen);
+int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, char *err, size_t errlen);
+int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *err, size_t errlen);
+int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap, char *err, size_t errlen);
+void ds4_session_snapshot_free(ds4_session_snapshot *snap);
+
+#endif
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-5c65762179d5 source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain what this code does and identify the inference stage it belongs to.
+
+File: metal/dsv4_misc.metal
+
+```metal
+ws the
+// unfused softmax/mul/sum graph in Objective-C to keep identical reductions.
+kernel void kernel_dsv4_softmax_pool(
+        constant ds4_metal_args_dsv4_softmax_pool & args,
+        device const char * kv,
+        device const char * score,
+        device       char * dst,
+        uint gid [[thread_position_in_grid]]) {
+    const int64_t n = args.ne0 * args.ne1;
+    if ((int64_t) gid >= n) {
+        return;
+    }
+
+    const int64_t id = gid % args.ne0;
+    const int64_t ic = gid / args.ne0;
+
+    float max_s = -INFINITY;
+    for (int64_t ir = 0; ir < args.ne00; ++ir) {
+        const float s = *((device const float *) (score + ir*args.nb10 + id*args.nb11 + ic*args.nb12));
+        max_s = max(max_s, s);
+    }
+
+    float sum = 0.0f;
+    float acc = 0.0f;
+    for (int64_t ir = 0; ir < args.ne00; ++ir) {
+        const float s = *((device const float *) (score + ir*args.nb10 + id*args.nb11 + ic*args.nb12));
+        const float w = exp(s - max_s);
+        const float v = *((device const float *) (kv + ir*args.nb00 + id*args.nb01 + ic*args.nb02));
+        sum += w;
+        acc += v*w;
+    }
+
+    *((device float *) (dst + id*args.nb0 + ic*args.nb1)) = acc/sum;
+}
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-642045a5f6e3 source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Review this excerpt for correctness risks, memory lifetime issues, and performance bottlenecks.
+
+File: metal/dsv4_hc.metal
+
+```metal
+N block.
+kernel void kernel_dsv4_hc_weighted_sum(
+        constant ds4_metal_args_dsv4_hc_weighted_sum & args,
+        device  const char * x,
+        device  const char * weights,
+        device        char * dst,
+        uint gid [[thread_position_in_grid]]) {
+    const int64_t n_elem = args.n_embd * args.n_tokens;
+    if ((int64_t) gid >= n_elem) {
+        return;
+    }
+
+    const int64_t d = ((int64_t) gid) % args.n_embd;
+    const int64_t t = ((int64_t) gid) / args.n_embd;
+
+    float acc = 0.0f;
+    for (int64_t h = 0; h < args.n_hc; ++h) {
+        const float xv = *((device const float *) (x       + d*args.nb_x0 + h*args.nb_x1 + t*args.nb_x2));
+        const float wv = *((device const float *) (weights + h*args.nb_w0 + t*args.nb_w1));
+        acc += xv * wv;
+    }
+
+    *((device float *) (dst + d*args.nb0 + t*args.nb1)) = acc;
+}
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-f546934f7803 agent nothink =====
+<|im_start|>system
+You are opencode, a terminal-based coding assistant. Resolve user tasks by inspecting the repository, planning a minimal change, and applying it. Use the bash, read, edit, and grep tools as needed.<|im_end|><|im_start|>user
+hello<|im_end|><|im_start|>assistant
+Hello. What would you like to work on?<|im_end|><|im_start|>user
+investigate why ds4-server logs 'shutdown requested' mid-request<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ds4_server.c:7297:        snprintf(err, sizeof(err), "shutdown requested");
+ds4_server.c:8199:    server_log(DS4_LOG_DEFAULT, "ds4-server: shutdown requested, draining requests");
+<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+    if (g_stop_requested && strcmp(finish, "error") != 0) {
+        finish = "error";
+        snprintf(err, sizeof(err), "shutdown requested");
+    }
+<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ds4_server.c:46:    g_stop_requested = 1;
+<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+static void stop_signal_handler(int sig) {
+    (void)sig;
+    if (g_stop_requested) _exit(130);
+    g_stop_requested = 1;
+    ...
+}
+<|im_end|><|im_start|>assistant
+g_stop_requested is set only by SIGINT/SIGTERM, so the mid-request 'shutdown requested' means the process received that signal. It is not raised by an internal timeout or by a client disconnect.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-853fadb52fa4 source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Suggest a minimal correctness-preserving optimization for this excerpt.
+
+File: metal/softmax.metal
+
+```metal
+um += exp(psrc2[i02] - max_val);
+    }
+
+    const float inv_sum = 1.0f/sum;
+
+    for (int i00 = tpitg.x; i00 < args.ne00/4; i00 += tptg.x) {
+        pdst4[i00] *= inv_sum;
+    }
+}
+
+typedef decltype(kernel_soft_max<float>)    kernel_soft_max_t;
+typedef decltype(kernel_soft_max_4<float4>) kernel_soft_max_4_t;
+
+// Host-visible F32 softmax variants used by compressor pooling.
+template [[host_name("kernel_soft_max_f32")]]   kernel kernel_soft_max_t   kernel_soft_max<float>;
+template [[host_name("kernel_soft_max_f32_4")]] kernel kernel_soft_max_4_t kernel_soft_max_4<float4>;
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-035a4c02de59 source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Trova bug sottili e spiega quali invarianti dell'inferenza possono rompersi.
+
+File: metal/glu.metal
+
+```metal
+struct ds4_metal_args_glu {
+    int32_t  ne00;
+    uint64_t nb01;
+    int32_t  ne10;
+    uint64_t nb11;
+    int32_t  ne0;
+    uint64_t nb1;
+    int32_t  i00;
+    int32_t  i10;
+    float    alpha;
+    float    limit;
+};
+
+// SwiGLU activation for the FFN inner state: silu(gate) * up. The DS4 graph
+// uses it between the gate/up expert matmuls and the down projection.
+kernel void kernel_swiglu_f32(
+        constant ds4_metal_args_glu & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        uint tgpig[[threadgroup_position_in_grid]],
+        uint tpitg[[thread_position_in_threadgroup]],
+        uint   ntg[[threads_per_threadgroup]]) {
+    device const float * src0_row = (device const float *) ((device const char *) src0 + tgpig*args.nb01) + args.i00;
+    device const float * src1_row = (device const float *) ((device const char *) src1 + tgpig*args.nb11) + args.i10;
+    device       float * dst_row  = (device       float *) ((device       char *) dst  + tgpig*args.nb1);
+
+    for (int i0 = tpitg; i0 < args.ne0; i0 += ntg) {
+        const float x0 = src0_row[i0];
+        const float x1 = src1_row[i0];
+
+        const float silu = x0 / (1.0f + exp(-x0));
+
+        dst_row[i0] = silu*x1;
+    }
+}
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-a2ba87e6dda4 source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Suggest a minimal correctness-preserving optimization for this excerpt.
+
+File: metal/argsort.metal
+
+```metal
+if (i < len0) {
+                    idx0 = tmp0[i];
+                    val0 = src0_row[idx0];
+                }
+            } else {
+                out_idx = idx1;
+                ++j;
+                if (j < len1) {
+                    idx1 = tmp1[j];
+                    val1 = src0_row[idx1];
+                }
+            }
+        }
+
+        dst[k] = out_idx;
+    }
+}
+
+// Host-visible merge variant used by DS4 top-k selection.
+template [[host_name("kernel_argsort_merge_f32_i32_desc")]] kernel argsort_merge_t kernel_argsort_merge_f32_i32<DS4_SORT_ORDER_DESC>;
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT source-ca3c5d5cc49b source nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Suggest a minimal correctness-preserving optimization for this excerpt.
+
+File: metal/norm.metal
+
+```metal
+w * row_stride4;
+
+    float sumf = 0.0f;
+    for (int i = tpitg.x; i < n4; i += ntg.x) {
+        const float4 v = x[i];
+        sumf += dot(v, v);
+    }
+    sumf = simd_sum(sumf);
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tiisg == 0) {
+        shmem_f32[sgitg] = sumf;
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    sumf = shmem_f32[tiisg];
+    sumf = simd_sum(sumf);
+
+    const float scale = rsqrt(sumf / float(n) + args.eps);
+
+    for (int i = tpitg.x; i < n4; i += ntg.x) {
+        y[i] = (x[i] * scale) * w[i];
+    }
+}
+```<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-81aa84a241fd programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Review this Bash snippet for quoting bugs: for f in $FILES; do cp $f $DEST; done<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-076daa9ec373 agent nothink =====
+<|im_start|>system
+You are a coding agent operating in a local repository. Be terse. Use tools for filesystem inspection and edits; answer plain questions directly. Never narrate what you are about to do.<|im_end|><|im_start|>user
+list the top-level repository files<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+.git
+README.md
+ds4.c
+ds4_server.c
+ds4_cli.c
+ds4.h
+ds4_metal.m
+metal/
+misc/
+tests/
+gguf-tools/
+speed-bench/
+Makefile
+<|im_end|><|im_start|>assistant
+Top-level files: README.md, ds4.c, ds4_server.c, ds4_cli.c, ds4.h, ds4_metal.m, Makefile.<|im_end|><|im_start|>user
+find files in src/metal<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+src/core/file_000.c
+src/core/file_001.c
+src/core/file_002.c
+src/core/file_003.c
+src/core/file_004.c
+src/core/file_005.c
+src/core/file_006.c
+src/core/file_007.c
+src/core/file_008.c
+src/core/file_009.c
+src/core/file_010.c
+src/core/file_011.c
+src/core/file_012.c
+src/core/file_013.c
+src/core/file_014.c
+src/core/file_015.c
+src/core/file_016.c
+src/core/file_017.c
+src/core/file_018.c
+src/core/file_019.c
+src/core/file_020.c
+src/core/file_021.c
+src/core/file_022.c
+src/core/file_023.c
+src/core/file_024.c
+src/core/file_025.c
+src/core/file_026.c
+src/core/file_027.c
+src/core/file_028.c
+src/core/file_029.c
+src/core/file_030.c
+src/core/file_031.c
+src/core/file_032.c
+src/core/file_033.c
+src/core/file_034.c
+src/core/file_035.c
+src/core/file_036.c
+src/core/file_037.c
+src/core/file_038.c
+src/core/file_039.c
+src/core/file_040.c
+src/core/file_041.c
+src/core/file_042.c
+src/core/file_043.c
+src/core/file_044.c
+src/core/file_045.c
+src/core/file_046.c
+src/core/file_047.c
+src/core/file_048.c
+src/core/file_049.c
+src/core/file_050.c
+src/core/file_051.c
+src/core/file_052.c
+src/core/file_053.c
+src/core/file_054.c
+src/core/file_055.c
+src/core/file_056.c
+src/core/file_057.c
+src/core/file_058.c
+src/core/file_059.c
+src/core/file_060.c
+src/core/file_061.c
+src/core/file_062.c
+src/core/file_063.c
+src/metal/file_000.c
+src/metal/file_001.c
+src/metal/file_002.c
+src/metal/file_003.c
+src/metal/file_004.c
+src/metal/file_005.c
+src/metal/file_006.c
+src/metal/file_007.c
+src/metal/file_008.c
+src/metal/file_009.c
+src/metal/file_010.c
+src/metal/file_011.c
+src/metal/file_012.c
+src/metal/file_013.c
+src/metal/file_014.c
+src/metal/file_015.c
+src/metal/file_016.c
+src/metal/file_017.c
+src/metal/file_018.c
+src/metal/file_019.c
+src/metal/file_020.c
+src/metal/file_021.c
+src/metal/file_022.c
+src/metal/file_023.c
+src/metal/file_024.c
+src/metal/file_025.c
+src/metal/file_026.c
+src/metal/file_027.c
+src/metal/file_028.c
+src/metal/file_029.c
+src/metal/file_030.c
+src/metal/file_031.c
+src/metal/file_032.c
+src/metal/file_033.c
+src/metal/file_034.c
+src/metal/file_035.c
+src/metal/file_036.c
+src/metal/file_037.c
+src/metal/file_038.c
+src/metal/file_039.c
+src/metal/file_040.c
+src/metal/file_041.c
+src/metal/file_042.c
+src/metal/file_043.c
+src/metal/file_044.c
+src/metal/file_045.c
+src/metal/file_046.c
+src/metal/file_047.c
+src/metal/file_048.c
+src/metal/file_049.c
+src/metal/file_050.c
+src/metal/file_051.c
+src/metal/file_052.c
+src/metal/file_053.c
+src/metal/file_054.c
+src/metal/file_055.c
+src/metal/file_056.c
+src/metal/file_057.c
+src/metal/file_058.c
+src/metal/file_059.c
+src/metal/file_060.c
+src/metal/file_061.c
+src/metal/file_062.c
+src/metal/file_063.c
+src/io/file_000.c
+src/io/file_001.c
+src/io/file_002.c
+src/io/file_003.c
+src/io/file_004.c
+src/io/file_005.c
+src/io/file_006.c
+src/io/file_007.c
+src/io/file_008.c
+src/io/file_009.c
+src/io/file_010.c
+src/io/file_011.c
+src/io/file_012.c
+src/io/file_013.c
+src/io/file_014.c
+src/io/file_015.c
+src/io/file_016.c
+src/io/file_017.c
+src/io/file_018.c
+src/io/file_019.c
+src/io/file_020.c
+src/io/file_021.c
+src/io/file_022.c
+src/io/file_023.c
+src/io/file_024.c
+src/io/file_025.c
+src/io/file_026.c
+src/io/file_027.c
+src/io/file_028.c
+src/io/file_029.c
+src/io/file_030.c
+src/io/file_031.c
+src/io/file_032.c
+src/io/file_033.c
+src/io/file_034.c
+src/io/file_035.c
+src/io/file_036.c
+src/io/file_037.c
+src/io/file_038.c
+src/io/file_039.c
+src/io/file_040.c
+src/io/file_041.c
+src/io/file_042.c
+src/io/file_043.c
+src/io/file_044.c
+src/io/file_045.c
+src/io/file_046.c
+src/io/file_047.c
+src/io/file_048.c
+src/io/file_049.c
+src/io/file_050.c
+src/io/file_051.c
+src/io/file_052.c
+src/io/file_053.c
+src/io/file_054.c
+src/io/file_055.c
+src/io/file_056.c
+src/io/file_057.c
+src/io/file_058.c
+src/io/file_059.c
+src/io/file_060.c
+src/io/file_061.c
+src/io/file_062.c
+src/io/file_063.c
+src/test/file_000.c
+src/test/file_001.c
+src/test/file_002.c
+src/test/file_003.c
+src/test/file_004.c
+src/test/file_005.c
+src/test/file_006.c
+src/test/file_007.c
+src/test/file_008.c
+src/test/file_009.c
+src/test/file_010.c
+src/test/file_011.c
+src/test/file_012.c
+src/test/file_013.c
+src/test/file_014.c
+src/test/file_015.c
+src/test/file_016.c
+src/test/file_017.c
+src/test/file_018.c
+src/test/file_019.c
+src/test/file_020.c
+src/test/file_021.c
+src/test/file_022.c
+src/test/file_023.c
+src/test/file_024.c
+src/test/file_025.c
+src/test/file_026.c
+src/test/file_027.c
+src/test/file_028.c
+src/test/file_029.c
+src/test/file_030.c
+src/test/file_031.c
+src/test/file_032.c
+src/test/file_033.c
+src/test/file_034.c
+src/test/file_035.c
+src/test/file_036.c
+src/test/file_037.c
+src/test/file_038.c
+src/test/file_039.c
+src/test/file_040.c
+src/test/file_041.c
+src/test/file_042.c
+src/test/file_043.c
+src/test/file_044.c
+src/test/file_045.c
+src/test/file_046.c
+src/test/file_047.c
+src/test/file_048.c
+src/test/file_049.c
+src/test/file_050.c
+src/test/file_051.c
+src/test/file_052.c
+src/test/file_053.c
+src/test/file_054.c
+src/test/file_055.c
+src/test/file_056.c
+src/test/file_057.c
+src/test/file_058.c
+src/test/file_059.c
+src/test/file_060.c
+src/test/file_061.c
+src/test/file_062.c
+src/test/file_063.c<|im_end|><|im_start|>assistant
+256 files across src/core, src/metal, src/io, src/test. Want me to focus on src/metal?<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-6bc29d98160d programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Given a failing pytest fixture that mutates global state, explain the bug and propose a fix.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-7bfa5704d9ff programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Write a Lua function that memoizes pure function calls with string keys.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-4dc026739ba3 programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Write a Swift function that parses command-line flags into a small struct with defaults.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-bf3c5969ccad programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain the borrow-checker error in a Rust iterator adapter that returns references into a temporary Vec.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-0cc13654667e programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Find the lifetime bug in this C function and give a minimal patch:
+
+char *join(const char *a,const char *b){char tmp[256];snprintf(tmp,sizeof tmp,"%s/%s",a,b);return tmp;}<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-7901a57e3c01 agent nothink =====
+<|im_start|>system
+You are Swival, a coding agent with a friendly, human-like personality. You solve tasks autonomously using the tools provided, taking the optimal decisions at every step. Keep going until the task is fully complete. Do not call tools for simple math, greetings, or unclear standalone questions. For minor ambiguity, pick the most likely intent and briefly state your choice.
+
+## Workflow
+
+- Use tools only when needed; answer plain questions directly.
+- Explore before editing: outline, list_files, grep, then read_file.
+- Use think before multi-step coding tasks, debugging, choosing alternatives, and editing code.
+- Use todo for multi-step work and mark items done as you finish.
+- One logical change at a time. Do not re-read files after editing.
+- On tool errors, use think to diagnose before retrying.
+
+## Editing
+
+- Copy old_string verbatim from read_file.
+- For multiple matches, pass line_number. Use replace_all only when every occurrence should change.
+
+## Safety
+
+- Never print secrets to the console.
+- Do not take any action that could degrade the workspace.<|im_end|><|im_start|>user
+add a /healthz endpoint to the server<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+todo updated: 3 open, 0 done
+<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ds4_server.c:7600:    if (!strcmp(path, "/v1/chat/completions")) {
+<|im_end|><|im_start|>assistant
+Routes dispatch off the path string in client_main near line 7600. I will add the /healthz arm there.<|im_end|><|im_start|>user
+rename the local variable tmpBuf to scratch_buf everywhere<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+edit applied: 6 occurrences replaced
+<|im_end|><|im_start|>assistant
+Renamed 6 occurrences in ds4_metal.m. Anything else?<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-fc723f795b99 programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Debug this JavaScript async loop that accidentally runs requests sequentially.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-1a5ef700565b programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain how to make this Java cache thread-safe without synchronizing the whole hot path.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-607178e41413 programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Optimize this SQL query with a covering index and explain why the current plan scans too many rows.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-0ce13de5a3aa programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain why this C ring buffer can overwrite unread data, then rewrite the push condition.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-7dded269253e programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Review a C++17 template that stores string_view keys and explain the dangling-reference risk.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-7e9fd8a208ab agent nothink =====
+<|im_start|>system
+You are opencode, a terminal-based coding assistant. Resolve user tasks by inspecting the repository, planning a minimal change, and applying it. Use the bash, read, edit, and grep tools as needed.<|im_end|><|im_start|>user
+what context window does this model report?<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+{"name":"DeepSeek-V4-Flash","params":"284B","active":"21B","context":1048576,"license":"DeepSeek"}
+<|im_end|><|im_start|>assistant
+It advertises a 1,048,576-token context window. Active params 21B, total 284B, DeepSeek license.<|im_end|><|im_start|>user
+rename the local variable tmpBuf to scratch_buf everywhere<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+edit applied: 6 occurrences replaced
+<|im_end|><|im_start|>assistant
+Renamed 6 occurrences in ds4_metal.m. Anything else?<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-c0ed7d9c0ca0 programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Convert a Ruby script from slurping a file to enumerating lines lazily.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-4f4e09b421b6 programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Find the SQL injection risk in a PHP PDO snippet and rewrite it with bound parameters.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-14ac43192e33 programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain when POSIX sh is preferable to Bash, and rewrite [[ -f "$x" ]] for POSIX sh.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-18bafb49d6b1 programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Refactor a Java method that catches Exception and hides interrupted status.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-89de0a54e284 programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Translate a denormalized event table query into a window-function query with row_number().<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-f6cd75ee724a agent nothink =====
+<|im_start|>system
+You are Swival, a coding agent with a friendly, human-like personality. You solve tasks autonomously using the tools provided, taking the optimal decisions at every step. Keep going until the task is fully complete. Do not call tools for simple math, greetings, or unclear standalone questions. For minor ambiguity, pick the most likely intent and briefly state your choice.
+
+## Workflow
+
+- Use tools only when needed; answer plain questions directly.
+- Explore before editing: outline, list_files, grep, then read_file.
+- Use think before multi-step coding tasks, debugging, choosing alternatives, and editing code.
+- Use todo for multi-step work and mark items done as you finish.
+- One logical change at a time. Do not re-read files after editing.
+- On tool errors, use think to diagnose before retrying.
+
+## Editing
+
+- Copy old_string verbatim from read_file.
+- For multiple matches, pass line_number. Use replace_all only when every occurrence should change.
+
+## Safety
+
+- Never print secrets to the console.
+- Do not take any action that could degrade the workspace.<|im_end|><|im_start|>user
+find functions named *_kv_*<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+grep: bad regex: unbalanced parenthesis
+<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ds4.c:88:static void ds4_kv_reset(...)
+ds4.c:412:static int  ds4_kv_size(...)
+<|im_end|><|im_start|>assistant
+Two candidates: ds4_kv_reset and ds4_kv_size, both in ds4.c. Want me to open either?<|im_end|><|im_start|>user
+what does sample_argmax do? read it<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+static int sample_argmax(const float *logits, int n) {
+    int best = 0;
+    float best_v = logits[0];
+    for (int i = 1; i < n; i++) {
+        if (logits[i] > best_v) {
+            best_v = logits[i];
+            best = i;
+        }
+    }
+    return best;
+}
+<|im_end|><|im_start|>assistant
+It picks the index of the largest logit by linear scan from index 1 forward, starting with index 0 as the initial best. No tie-breaker beyond first-seen.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-d60f4045fa86 programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Implement a Rust LRU cache skeleton using HashMap plus a linked list index arena.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-917989ff1e8c programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Convert this C++ RAII wrapper to avoid double-close after move assignment.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-12e5a5b9f965 programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain how Zig error unions differ from nullable pointers in a file-reading helper.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT programming-7b6f7e3c273a programming nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Write a Bash script that resumes a curl download, validates SHA256, and updates a symlink atomically.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-9865dcca5787 algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain why BFS gives shortest paths in an unweighted graph and show the queue invariant.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-a7a610e0eeab agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+hello<|im_end|><|im_start|>assistant
+Hello. What would you like to work on?<|im_end|><|im_start|>user
+where is the Makefile target for tests defined?<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+all: ds4 ds4-server ds4-bench
+
+ds4-server: ds4_server.o rax.o $(CORE_OBJS)
+...<|im_end|><|im_start|>assistant
+There is no 'test' phony target. Tests are built ad hoc per Makefile. We can add one if you want.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-9754ee9159f9 algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Implement an LRU cache with O(1) get and put, naming every pointer update edge case.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-7fc631d70955 algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Show how to detect an integer overflow in binary search midpoint calculation.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-060f61ed1f10 algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Write pseudocode for Tarjan strongly connected components and explain lowlink.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-8460cf8dec44 algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain suffix arrays at a high level and when they are preferable to suffix trees.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-36cb19c40713 algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain a Fenwick tree: update, prefix sum, and why i += i & -i works.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-96f3d60ecece agent nothink =====
+<|im_start|>system
+You are Swival, a coding agent with a friendly, human-like personality. You solve tasks autonomously using the tools provided, taking the optimal decisions at every step. Keep going until the task is fully complete. Do not call tools for simple math, greetings, or unclear standalone questions. For minor ambiguity, pick the most likely intent and briefly state your choice.
+
+## Workflow
+
+- Use tools only when needed; answer plain questions directly.
+- Explore before editing: outline, list_files, grep, then read_file.
+- Use think before multi-step coding tasks, debugging, choosing alternatives, and editing code.
+- Use todo for multi-step work and mark items done as you finish.
+- One logical change at a time. Do not re-read files after editing.
+- On tool errors, use think to diagnose before retrying.
+
+## Editing
+
+- Copy old_string verbatim from read_file.
+- For multiple matches, pass line_number. Use replace_all only when every occurrence should change.
+
+## Safety
+
+- Never print secrets to the console.
+- Do not take any action that could degrade the workspace.<|im_end|><|im_start|>user
+list the top-level repository files<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+.git
+README.md
+ds4.c
+ds4_server.c
+ds4_cli.c
+ds4.h
+ds4_metal.m
+metal/
+misc/
+tests/
+gguf-tools/
+speed-bench/
+Makefile
+<|im_end|><|im_start|>assistant
+Top-level files: README.md, ds4.c, ds4_server.c, ds4_cli.c, ds4.h, ds4_metal.m, Makefile.<|im_end|><|im_start|>user
+what context window does this model report?<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+{"name":"DeepSeek-V4-Flash","params":"284B","active":"21B","context":1048576,"license":"DeepSeek"}
+<|im_end|><|im_start|>assistant
+It advertises a 1,048,576-token context window. Active params 21B, total 284B, DeepSeek license.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-3ba40cc50e49 algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Derive binary exponentiation and extend it to modular matrix exponentiation.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-add1524de44a algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Describe topological sorting with cycle detection and produce clear pseudocode.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-32dec413e94f algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain consistent hashing and what happens when one node is added or removed.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-de5d59f21e01 algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Compare merge sort and quicksort for linked lists, including cache behavior and stability.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-5e45800a7660 algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain reservoir sampling and prove every item has probability k/n of being retained.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-4f8eb80f705e agent nothink =====
+<|im_start|>system
+You are Swival, a coding agent with a friendly, human-like personality. You solve tasks autonomously using the tools provided, taking the optimal decisions at every step. Keep going until the task is fully complete. Do not call tools for simple math, greetings, or unclear standalone questions. For minor ambiguity, pick the most likely intent and briefly state your choice.
+
+## Workflow
+
+- Use tools only when needed; answer plain questions directly.
+- Explore before editing: outline, list_files, grep, then read_file.
+- Use think before multi-step coding tasks, debugging, choosing alternatives, and editing code.
+- Use todo for multi-step work and mark items done as you finish.
+- One logical change at a time. Do not re-read files after editing.
+- On tool errors, use think to diagnose before retrying.
+
+## Editing
+
+- Copy old_string verbatim from read_file.
+- For multiple matches, pass line_number. Use replace_all only when every occurrence should change.
+
+## Safety
+
+- Never print secrets to the console.
+- Do not take any action that could degrade the workspace.<|im_end|><|im_start|>user
+find functions named *_kv_*<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+grep: bad regex: unbalanced parenthesis
+<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ds4.c:88:static void ds4_kv_reset(...)
+ds4.c:412:static int  ds4_kv_size(...)
+<|im_end|><|im_start|>assistant
+Two candidates: ds4_kv_reset and ds4_kv_size, both in ds4.c. Want me to open either?<|im_end|><|im_start|>user
+fetch http://localhost/status and summarize<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+<html><body>
+<h1>Server status</h1>
+<pre>load=0.32 mem=78% temp=64C</pre>
+<a href="/">home</a> &amp; <a href="/docs">docs</a>
+</body></html>
+<|im_end|><|im_start|>assistant
+Server reports load 0.32, memory 78%, temperature 64C. The body is plain HTML with two links.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-6d771ea4c40f algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Derive the dynamic programming recurrence for edit distance and show how to reduce memory to two rows.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-ddcdf43e1e8a algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Implement union-find with path compression and union by size; explain amortized complexity.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-c29becaede6c algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Recall Dijkstra's algorithm, state its invariant, and write pseudocode for a binary heap implementation.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT algorithms-f007b3db68a9 algorithms nothink =====
+<|im_start|>system
+You are DeepSeek V4 Flash running locally. Answer accurately, preserve technical details, and use tools only when the prompt asks for tool use.<|im_end|><|im_start|>user
+Explain KMP prefix-function construction using the string 'ababaca' as an example.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-32cdc27651d5 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this English text to Italian (italiano):
+
+Please keep the answer concise, but do not omit the important edge cases.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-4ade5a6b9430 agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+hello<|im_end|><|im_start|>assistant
+Hello. What would you like to work on?<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-05c9fe2d4903 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this English text to Dutch (Nederlands):
+
+Translate the user-facing error without changing file names, flags, or code identifiers.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-5c5f81e4ffec translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this English text to Romanian (română):
+
+This model is running locally and does not send the prompt to a remote API.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-b7794fdfbdc9 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this English text to Swedish (svenska):
+
+The script should resume the download and verify the checksum before replacing the file.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-25d811c48ead translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this Italian text to English:
+
+Il server salva il checkpoint solo quando il prefisso del prompt è stabile.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-fae71679f3eb translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this Spanish text to English:
+
+La migración de la base de datos debe conservar las filas existentes.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-eb5e23be1ceb agent nothink =====
+<|im_start|>system
+Sei un assistente di programmazione che opera in un repository locale. Usa gli strumenti per ispezionare i file e applicare modifiche. Rispondi in italiano. Sii conciso.<|im_end|><|im_start|>user
+trova dove viene parsato reasoning_effort<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ds4_server.c:710:static bool parse_reasoning_effort_name(const char *s, ds4_think_mode *out) {
+ds4_server.c:725:static bool parse_reasoning_effort_value(const char **p, ds4_think_mode *out) {
+<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+static bool parse_reasoning_effort_name(const char *s, ds4_think_mode *out) {
+    if (!s) return false;
+    if (!strcmp(s, "max")) ... 'xhigh' 'high' 'medium' 'low'
+}
+<|im_end|><|im_start|>assistant
+Il parser accetta solo max, xhigh, high, medium, low. Il valore 'none' viene rifiutato come JSON invalido.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-3c92b2cee4de translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this English text to Portuguese (português):
+
+The database migration must preserve existing rows and remain safe under concurrent writes.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-aa8ad1028864 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this English text to Dutch (Nederlands):
+
+The server stores a checkpoint only after the prompt prefix is stable.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-560fb7048268 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this English text to Swedish (svenska):
+
+The algorithm uses a heap, a visited set, and a predecessor map to reconstruct the path.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-635a2538f36e translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this English text to Italian (italiano):
+
+If the cache is cold, prefill is slower; once the prefix is reused, generation can start sooner.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-a7b69cba5648 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this Polish text to English:
+
+Algorytm używa kopca, zbioru odwiedzonych wierzchołków i mapy poprzedników.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-b9652a823c8f agent nothink =====
+<|im_start|>system
+You are Swival, a coding agent with a friendly, human-like personality. You solve tasks autonomously using the tools provided, taking the optimal decisions at every step. Keep going until the task is fully complete. Do not call tools for simple math, greetings, or unclear standalone questions. For minor ambiguity, pick the most likely intent and briefly state your choice.
+
+## Workflow
+
+- Use tools only when needed; answer plain questions directly.
+- Explore before editing: outline, list_files, grep, then read_file.
+- Use think before multi-step coding tasks, debugging, choosing alternatives, and editing code.
+- Use todo for multi-step work and mark items done as you finish.
+- One logical change at a time. Do not re-read files after editing.
+- On tool errors, use think to diagnose before retrying.
+
+## Editing
+
+- Copy old_string verbatim from read_file.
+- For multiple matches, pass line_number. Use replace_all only when every occurrence should change.
+
+## Safety
+
+- Never print secrets to the console.
+- Do not take any action that could degrade the workspace.<|im_end|><|im_start|>user
+build the server<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+make: *** [ds4-server] Error 1
+ds4_server.c:1234:9: error: implicit declaration of function 'foo'
+    foo(x, y);
+        ^
+<|im_end|><|im_start|>assistant
+Build broke at ds4_server.c:1234 on an implicit declaration of foo. Likely a missing include after a refactor.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-74a5d18a9f56 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this Romanian text to English:
+
+Dacă memoria cache este rece, prefill-ul este mai lent.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-f2ddc1f421c7 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this French text to English:
+
+Le script doit reprendre le téléchargement et vérifier la somme de contrôle.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-a6d5a75103c4 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this Dutch text to English:
+
+Vertaal de foutmelding zonder bestandsnamen of opties te wijzigen.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-f314bdcb6d60 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this Portuguese text to English:
+
+O modelo roda localmente e não envia o prompt para uma API remota.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-12064600f494 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this Chinese text to English:
+
+如果缓存是冷的，预填充会更慢；复用前缀后，生成可以更早开始。<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-5e2cf823db9c agent nothink =====
+<|im_start|>system
+You are Swival, a coding agent with a friendly, human-like personality. You solve tasks autonomously using the tools provided, taking the optimal decisions at every step. Keep going until the task is fully complete. Do not call tools for simple math, greetings, or unclear standalone questions. For minor ambiguity, pick the most likely intent and briefly state your choice.
+
+## Workflow
+
+- Use tools only when needed; answer plain questions directly.
+- Explore before editing: outline, list_files, grep, then read_file.
+- Use think before multi-step coding tasks, debugging, choosing alternatives, and editing code.
+- Use todo for multi-step work and mark items done as you finish.
+- One logical change at a time. Do not re-read files after editing.
+- On tool errors, use think to diagnose before retrying.
+
+## Editing
+
+- Copy old_string verbatim from read_file.
+- For multiple matches, pass line_number. Use replace_all only when every occurrence should change.
+
+## Safety
+
+- Never print secrets to the console.
+- Do not take any action that could degrade the workspace.<|im_end|><|im_start|>user
+show what a problematic tool body looks like<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+snippet contains a literal sentinel: </｜DSML｜parameter> in body
+second line still inside the captured tool output
+<|im_end|><|im_start|>assistant
+The body contains a literal </｜DSML｜parameter> inside the tool output. The renderer escapes the leading character to &lt;/｜DSML｜parameter> so the model never sees a stray closing tag.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-0fa04a8f8b3e translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this German text to English:
+
+Die Antwort soll kurz bleiben, aber wichtige Randfälle nicht auslassen.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT translation-96b5f64c6238 translation nothink =====
+<|im_start|>system
+You are a precise technical translator. Preserve code, file paths, command-line flags, and product names exactly.<|im_end|><|im_start|>user
+Translate this Swedish text to English:
+
+Behåll kodidentifierare och kommandoradsflaggor oförändrade.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-e28a3e23fbb5 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Summarize the passage in three concise bullet points.
+
+Passage:
+A market cooperative printed receipts that showed the farmer's name, the distance traveled, and the date of harvest. Some customers found it charming; others found it distracting. Sales data later showed that the extra information mattered most for items people could not inspect directly, such as flour, oil, and honey. For tomatoes and peaches, smell still outweighed every sentence on the receipt.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-ddc91bbd9573 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a headline, a one-sentence deck, and five search keywords for the passage.
+
+Passage:
+The language class stopped beginning with grammar charts and started with lost-and-found objects: a glove, a ticket, a key, a cracked phone case. Students described who might own each item and what had happened before it was lost. Grammar still appeared, but as a tool for making the story precise. Attendance improved because every lesson began with a small mystery.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-48dbc4bcab3d language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Extract people, places, organizations, problems, actions, and outcomes as compact JSON.
+
+Passage:
+The museum received a letter from a visitor who had recognized her grandmother in the background of a 1934 photograph. Until then, the archive listed the woman only as an unnamed station worker. The visitor sent a copy of a diary page, a payroll stub, and a recipe card written in the same hand. The curator updated the catalog entry, then wrote a short exhibit label about how public memory can repair an incomplete institutional record.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-d4ddd7952349 agent nothink =====
+<|im_start|>system
+You are opencode, a terminal-based coding assistant. Resolve user tasks by inspecting the repository, planning a minimal change, and applying it. Use the bash, read, edit, and grep tools as needed.<|im_end|><|im_start|>user
+rename the local variable tmpBuf to scratch_buf everywhere<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+edit applied: 6 occurrences replaced
+<|im_end|><|im_start|>assistant
+Renamed 6 occurrences in ds4_metal.m. Anything else?<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-4c6d16a0ca68 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a headline, a one-sentence deck, and five search keywords for the passage.
+
+Passage:
+The island power station added batteries before it added more solar panels. Tourists expected the opposite, but engineers explained that the island already produced enough midday electricity and lost too much after sunset. The batteries did not make the photographs prettier, yet they reduced diesel use more than another row of panels would have. The best improvement was the least visible one.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-c5c610c16056 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage in plain English for a careful twelve-year-old reader.
+
+Passage:
+In the restaurant kitchen, the radio was tuned low enough that customers could not hear it and high enough that cooks could recognize the song. The owner thought it was a distraction until a busy night when the radio failed and the staff lost their rhythm. The music had been acting as a shared clock, marking prep, service, cleanup, and the moment everyone could finally sit down.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-4bee56270636 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage as a formal memo while preserving every factual detail.
+
+Passage:
+In the restaurant kitchen, the radio was tuned low enough that customers could not hear it and high enough that cooks could recognize the song. The owner thought it was a distraction until a busy night when the radio failed and the staff lost their rhythm. The music had been acting as a shared clock, marking prep, service, cleanup, and the moment everyone could finally sit down.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-3e7f1b8974b1 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a headline, a one-sentence deck, and five search keywords for the passage.
+
+Passage:
+The warehouse robot failed only on rainy days. Engineers first blamed the wheel encoders, then the floor markers, then the routing software. A night-shift operator finally noticed that wet umbrellas left small puddles near the entrance, and the robot slowed down whenever its front sensor saw reflected ceiling lights. The fix was a mat, a hood over the sensor, and a dashboard note that credited the operator by name.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-dabacaab67e7 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a constructive critique of the decision or design described in the passage.
+
+Passage:
+The language class stopped beginning with grammar charts and started with lost-and-found objects: a glove, a ticket, a key, a cracked phone case. Students described who might own each item and what had happened before it was lost. Grammar still appeared, but as a tool for making the story precise. Attendance improved because every lesson began with a small mystery.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-95782afad963 agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+change the prefill chunk size from 2048 to 4096<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+edit failed: old_string not found in path=ds4_server.c
+(line_number not supplied; 3 candidate locations matched on partial)
+<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+1: #include "ds4.h"
+2: #include "rax.h"
+...<|im_end|><|im_start|>assistant
+I need the actual line. Will re-scan with grep -n before editing.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-7c52a9366e95 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+The mountain train was built to carry ore, not tourists. Its narrow tracks followed the river, crossed three timber bridges, and climbed through tunnels cut by hand. After the mine closed, the town nearly removed the line, but teachers argued it was the clearest way to show students how geography shaped local industry. Today the train runs only on weekends, slowly enough for passengers to see the old signal posts and the terraces where workers once kept vegetable gardens.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-15d300cafc86 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into Simplified Chinese, preserving names and concrete details.
+
+Passage:
+The weather bulletin was read in three languages because the fishing boats did not all share the same crew language. The broadcaster learned to keep numbers in the same order every time: wind direction, wind speed, wave height, visibility, and warnings. Crews said the repeated structure helped even when reception was poor, because a missing word could often be inferred from its position in the sequence.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-735a438b29f2 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into natural Spanish, preserving names and concrete details.
+
+Passage:
+The newspaper correction was longer than the original mistake. It named the incorrect statistic, explained how the reporter had misread the table, printed the correct number, and described how future data stories would be checked. Some readers mocked the length, but subscriptions rose after the editor began treating corrections as public maintenance rather than embarrassment.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-dfa73427786d language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into natural Italian, preserving names and concrete details.
+
+Passage:
+At the council meeting, the argument was not whether the river should be cleaned, but how to measure success. Anglers wanted fish counts, parents wanted safer banks, farmers wanted predictable irrigation, and the budget office wanted milestones it could audit. The final plan used four measures and a public map updated every quarter, which made the project slower to announce but easier to defend.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-bdef0aa47f8c language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compress the passage to at most 90 words without losing the causal chain.
+
+Passage:
+The city planted two thousand street trees after a summer in which the hospital recorded an unusual rise in heat exhaustion. Sensors showed that shaded sidewalks were often eight degrees cooler than exposed ones. Shop owners first worried that construction would block their windows, but many later said people lingered longer outside their stores. The largest challenge was not planting the trees; it was watering them during their first three dry seasons.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-58b731e8a5d8 agent nothink =====
+<|im_start|>system
+You are opencode, a terminal-based coding assistant. Resolve user tasks by inspecting the repository, planning a minimal change, and applying it. Use the bash, read, edit, and grep tools as needed.<|im_end|><|im_start|>user
+what context window does this model report?<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+{"name":"DeepSeek-V4-Flash","params":"284B","active":"21B","context":1048576,"license":"DeepSeek"}
+<|im_end|><|im_start|>assistant
+It advertises a 1,048,576-token context window. Active params 21B, total 284B, DeepSeek license.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-aee653012db3 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write an academic-style abstract for the passage in 120 words or fewer.
+
+Passage:
+The bridge inspection report listed no urgent danger, but it changed the maintenance plan anyway. Hairline cracks near the drainage holes showed that water was collecting where the original drawings assumed it would flow away. The fix was inexpensive: clean the channels twice a year and seal one joint. The important discovery was not damage, but the pattern that would eventually create it.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-91f76a4c994c language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short dialogue between two people who disagree but listen carefully.
+
+Passage:
+In the orchard ledger, every tree had a row for pruning, pests, harvest weight, and weather notes. The oldest entries were written by a farmer who never used abbreviations; later entries became shorter as the farm grew. A new manager wanted to replace the ledger with a tablet form, but kept one blank field labeled 'odd observations' after discovering that several good decisions had started as remarks that did not fit any box.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-383c3b3c7825 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short FAQ with four questions and direct answers.
+
+Passage:
+The city planted two thousand street trees after a summer in which the hospital recorded an unusual rise in heat exhaustion. Sensors showed that shaded sidewalks were often eight degrees cooler than exposed ones. Shop owners first worried that construction would block their windows, but many later said people lingered longer outside their stores. The largest challenge was not planting the trees; it was watering them during their first three dry seasons.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-a455537ba507 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into Simplified Chinese, preserving names and concrete details.
+
+Passage:
+The sewing manual used drawings instead of photographs because thread and shadows confused beginners. Each drawing exaggerated the needle, the fold, and the direction of tension. Advanced tailors found the pages plain, but new learners made fewer mistakes. The designer concluded that realism is not always the friend of instruction; sometimes the useful picture is the one that lies about scale.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-9df8b22eac88 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a headline, a one-sentence deck, and five search keywords for the passage.
+
+Passage:
+In the restaurant kitchen, the radio was tuned low enough that customers could not hear it and high enough that cooks could recognize the song. The owner thought it was a distraction until a busy night when the radio failed and the staff lost their rhythm. The music had been acting as a shared clock, marking prep, service, cleanup, and the moment everyone could finally sit down.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-c4edd05ada93 agent nothink =====
+<|im_start|>system
+You are opencode, a terminal-based coding assistant. Resolve user tasks by inspecting the repository, planning a minimal change, and applying it. Use the bash, read, edit, and grep tools as needed.<|im_end|><|im_start|>user
+where do we render the tool-call preamble?<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ds4_server.c:1646:static void append_tools_prompt_text(buf *b, const char *tool_schemas) {
+ds4_server.c:1922:        append_tools_prompt_text(&system, tool_schemas);
+<|im_end|><|im_start|>assistant
+It is in ds4_server.c at line 1646, called from render_chat_prompt_text at 1922.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-06c73ec26f1e language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write an academic-style abstract for the passage in 120 words or fewer.
+
+Passage:
+The wetland boardwalk was raised by only twelve centimeters, but that was enough to keep spring water from covering the planks. Visitors noticed the new railings and benches, not the height. The maintenance crew noticed something else: fewer people stepped off the path, so seedlings returned near the edges. A small engineering change had become a habitat change.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-54464f530e46 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into natural Spanish, preserving names and concrete details.
+
+Passage:
+When the archive digitized its index cards, the scanner captured every coffee stain and pencil mark. Some volunteers wanted to clean the images automatically, but the archivist objected. The stains sometimes showed which boxes had been handled during a flood, and the pencil marks showed corrections made before the typed catalog existed. The project therefore stored both a clean transcription and the original image side by side.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-7d0b4b170807 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+When the archive digitized its index cards, the scanner captured every coffee stain and pencil mark. Some volunteers wanted to clean the images automatically, but the archivist objected. The stains sometimes showed which boxes had been handled during a flood, and the pencil marks showed corrections made before the typed catalog existed. The project therefore stored both a clean transcription and the original image side by side.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-20302bf0b530 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage as a formal memo while preserving every factual detail.
+
+Passage:
+The town clock gained four minutes every week. For decades no one fixed it because train schedules had moved to phones, and the clock remained mostly ceremonial. Then the school used it for a lesson about measurement error. Students logged the drift, predicted when it would be wrong by an hour, and convinced the council that preservation sometimes means making an old thing accurate again.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-ced91f2325af language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a headline, a one-sentence deck, and five search keywords for the passage.
+
+Passage:
+The bookshop window once displayed bestsellers in perfect rows. A new bookseller replaced them with pairs: a cookbook beside a travel memoir, a history beside a novel, a children's atlas beside a book about birds. Sales became less predictable but more varied. Customers said the window felt like a conversation instead of a ranking.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-aa517cdf1218 agent nothink =====
+<|im_start|>system
+You are Swival, a coding agent with a friendly, human-like personality. You solve tasks autonomously using the tools provided, taking the optimal decisions at every step. Keep going until the task is fully complete. Do not call tools for simple math, greetings, or unclear standalone questions. For minor ambiguity, pick the most likely intent and briefly state your choice.
+
+## Workflow
+
+- Use tools only when needed; answer plain questions directly.
+- Explore before editing: outline, list_files, grep, then read_file.
+- Use think before multi-step coding tasks, debugging, choosing alternatives, and editing code.
+- Use todo for multi-step work and mark items done as you finish.
+- One logical change at a time. Do not re-read files after editing.
+- On tool errors, use think to diagnose before retrying.
+
+## Editing
+
+- Copy old_string verbatim from read_file.
+- For multiple matches, pass line_number. Use replace_all only when every occurrence should change.
+
+## Safety
+
+- Never print secrets to the console.
+- Do not take any action that could degrade the workspace.<|im_end|><|im_start|>user
+find functions named *_kv_*<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+grep: bad regex: unbalanced parenthesis
+<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ds4.c:88:static void ds4_kv_reset(...)
+ds4.c:412:static int  ds4_kv_size(...)
+<|im_end|><|im_start|>assistant
+Two candidates: ds4_kv_reset and ds4_kv_size, both in ds4.c. Want me to open either?<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-27c2964170af language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Summarize the passage in three concise bullet points.
+
+Passage:
+The forest trail reopened with fewer signs than before. Rangers had learned that visitors ignored crowded notice boards but noticed a single clear instruction at the exact point where a decision was needed. The new signs named the next landmark, the distance, and one safety warning. Complaints about being lost dropped, and the trail looked less like a corridor of rules.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-53a98a8a397a language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage as a formal memo while preserving every factual detail.
+
+Passage:
+The wetland boardwalk was raised by only twelve centimeters, but that was enough to keep spring water from covering the planks. Visitors noticed the new railings and benches, not the height. The maintenance crew noticed something else: fewer people stepped off the path, so seedlings returned near the edges. A small engineering change had become a habitat change.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-dae5e53a9613 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into natural Italian, preserving names and concrete details.
+
+Passage:
+The island power station added batteries before it added more solar panels. Tourists expected the opposite, but engineers explained that the island already produced enough midday electricity and lost too much after sunset. The batteries did not make the photographs prettier, yet they reduced diesel use more than another row of panels would have. The best improvement was the least visible one.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-e0a29089b5e8 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into natural Spanish, preserving names and concrete details.
+
+Passage:
+A rural clinic changed its appointment schedule after noticing that patients who worked in the fields missed morning visits twice as often as afternoon ones. The new calendar reserved early slots for school vaccinations and late slots for adults who could not leave work before sunset. Missed appointments fell within a month, but the nurses also found that reminder calls mattered most when they came from someone who spoke the patient's first language.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-c4750bb2f939 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short FAQ with four questions and direct answers.
+
+Passage:
+The weather bulletin was read in three languages because the fishing boats did not all share the same crew language. The broadcaster learned to keep numbers in the same order every time: wind direction, wind speed, wave height, visibility, and warnings. Crews said the repeated structure helped even when reception was poor, because a missing word could often be inferred from its position in the sequence.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-3ab3e2e47340 agent nothink =====
+<|im_start|>system
+You are Swival, a coding agent with a friendly, human-like personality. You solve tasks autonomously using the tools provided, taking the optimal decisions at every step. Keep going until the task is fully complete. Do not call tools for simple math, greetings, or unclear standalone questions. For minor ambiguity, pick the most likely intent and briefly state your choice.
+
+## Workflow
+
+- Use tools only when needed; answer plain questions directly.
+- Explore before editing: outline, list_files, grep, then read_file.
+- Use think before multi-step coding tasks, debugging, choosing alternatives, and editing code.
+- Use todo for multi-step work and mark items done as you finish.
+- One logical change at a time. Do not re-read files after editing.
+- On tool errors, use think to diagnose before retrying.
+
+## Editing
+
+- Copy old_string verbatim from read_file.
+- For multiple matches, pass line_number. Use replace_all only when every occurrence should change.
+
+## Safety
+
+- Never print secrets to the console.
+- Do not take any action that could degrade the workspace.<|im_end|><|im_start|>user
+fetch the local docs page<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+<html><body>
+<h1>Server status</h1>
+<pre>load=0.32 mem=78% temp=64C</pre>
+<a href="/">home</a> &amp; <a href="/docs">docs</a>
+</body></html>
+<|im_end|><|im_start|>assistant
+Two pages linked from the index, plus a small load/mem/temp block. The body comes in escaped: &amp; for &, &lt; for <, &gt; for >.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-5718d75e6037 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Identify the tone, intended audience, and two implied assumptions in the passage.
+
+Passage:
+The desert well was marked on maps as unreliable, but the older guides still visited it after winter rains. They knew the water rose slowly through cracked stone and disappeared before summer. A research team installed a sensor and confirmed the pattern, yet the guides' calendar was more useful than the graph because it included wind, animal tracks, and stories about years when the rains arrived late.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-5a603c499b2a language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+The night ferry crossed the lake even when the road around it was clear. Commuters liked the twenty quiet minutes between phone calls and office lights, and nurses used the benches to rest after long shifts. When the transport agency proposed canceling the route, its spreadsheet counted only tickets sold, not the ambulance trips avoided during winter, the students who reached evening classes, or the small shops that opened early because dock workers bought breakfast there.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-eda84f8422b9 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage in plain English for a careful twelve-year-old reader.
+
+Passage:
+The island power station added batteries before it added more solar panels. Tourists expected the opposite, but engineers explained that the island already produced enough midday electricity and lost too much after sunset. The batteries did not make the photographs prettier, yet they reduced diesel use more than another row of panels would have. The best improvement was the least visible one.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-444030db1c7b language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Identify the tone, intended audience, and two implied assumptions in the passage.
+
+Passage:
+A biologist's field notebook used color more than prose: blue dots for water, green lines for moss, orange circles for nests. Her assistant wanted to transcribe everything into sentences, but she kept the diagrams because they showed proximity at a glance. Years later, the sketches helped another team see that the birds nested near temporary pools only after a particular moss appeared.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-2b9bac183706 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Copy-edit the passage for clarity. Keep the meaning, but improve flow and sentence rhythm.
+
+Passage:
+The language class stopped beginning with grammar charts and started with lost-and-found objects: a glove, a ticket, a key, a cracked phone case. Students described who might own each item and what had happened before it was lost. Grammar still appeared, but as a tool for making the story precise. Attendance improved because every lesson began with a small mystery.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-9eb5528cb648 agent nothink =====
+<|im_start|>system
+Sei un assistente di programmazione che opera in un repository locale. Usa gli strumenti per ispezionare i file e applicare modifiche. Rispondi in italiano. Sii conciso.<|im_end|><|im_start|>user
+elenca i file C principali<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+trovati 4 file:
+  ds4.c
+  ds4_server.c
+  ds4_cli.c
+  ds4_metal.m
+<|im_end|><|im_start|>assistant
+I quattro file C principali sono ds4.c, ds4_server.c, ds4_cli.c e ds4_metal.m.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-20669b0d421a language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Copy-edit the passage for clarity. Keep the meaning, but improve flow and sentence rhythm.
+
+Passage:
+The warehouse robot failed only on rainy days. Engineers first blamed the wheel encoders, then the floor markers, then the routing software. A night-shift operator finally noticed that wet umbrellas left small puddles near the entrance, and the robot slowed down whenever its front sensor saw reflected ceiling lights. The fix was a mat, a hood over the sensor, and a dashboard note that credited the operator by name.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-07090234e688 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage in plain English for a careful twelve-year-old reader.
+
+Passage:
+The museum received a letter from a visitor who had recognized her grandmother in the background of a 1934 photograph. Until then, the archive listed the woman only as an unnamed station worker. The visitor sent a copy of a diary page, a payroll stub, and a recipe card written in the same hand. The curator updated the catalog entry, then wrote a short exhibit label about how public memory can repair an incomplete institutional record.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-5612f3b338e9 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Identify the tone, intended audience, and two implied assumptions in the passage.
+
+Passage:
+The bridge inspection report listed no urgent danger, but it changed the maintenance plan anyway. Hairline cracks near the drainage holes showed that water was collecting where the original drawings assumed it would flow away. The fix was inexpensive: clean the channels twice a year and seal one joint. The important discovery was not damage, but the pattern that would eventually create it.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-9addf5173e6d language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short FAQ with four questions and direct answers.
+
+Passage:
+The wetland boardwalk was raised by only twelve centimeters, but that was enough to keep spring water from covering the planks. Visitors noticed the new railings and benches, not the height. The maintenance crew noticed something else: fewer people stepped off the path, so seedlings returned near the edges. A small engineering change had become a habitat change.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-8b9a122a72de language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+The island power station added batteries before it added more solar panels. Tourists expected the opposite, but engineers explained that the island already produced enough midday electricity and lost too much after sunset. The batteries did not make the photographs prettier, yet they reduced diesel use more than another row of panels would have. The best improvement was the least visible one.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-3ad14f97ccc2 agent nothink =====
+<|im_start|>system
+You are a coding agent operating in a local repository. Be terse. Use tools for filesystem inspection and edits; answer plain questions directly. Never narrate what you are about to do.<|im_end|><|im_start|>user
+find files in src/metal<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+src/core/file_000.c
+src/core/file_001.c
+src/core/file_002.c
+src/core/file_003.c
+src/core/file_004.c
+src/core/file_005.c
+src/core/file_006.c
+src/core/file_007.c
+src/core/file_008.c
+src/core/file_009.c
+src/core/file_010.c
+src/core/file_011.c
+src/core/file_012.c
+src/core/file_013.c
+src/core/file_014.c
+src/core/file_015.c
+src/core/file_016.c
+src/core/file_017.c
+src/core/file_018.c
+src/core/file_019.c
+src/core/file_020.c
+src/core/file_021.c
+src/core/file_022.c
+src/core/file_023.c
+src/core/file_024.c
+src/core/file_025.c
+src/core/file_026.c
+src/core/file_027.c
+src/core/file_028.c
+src/core/file_029.c
+src/core/file_030.c
+src/core/file_031.c
+src/core/file_032.c
+src/core/file_033.c
+src/core/file_034.c
+src/core/file_035.c
+src/core/file_036.c
+src/core/file_037.c
+src/core/file_038.c
+src/core/file_039.c
+src/core/file_040.c
+src/core/file_041.c
+src/core/file_042.c
+src/core/file_043.c
+src/core/file_044.c
+src/core/file_045.c
+src/core/file_046.c
+src/core/file_047.c
+src/core/file_048.c
+src/core/file_049.c
+src/core/file_050.c
+src/core/file_051.c
+src/core/file_052.c
+src/core/file_053.c
+src/core/file_054.c
+src/core/file_055.c
+src/core/file_056.c
+src/core/file_057.c
+src/core/file_058.c
+src/core/file_059.c
+src/core/file_060.c
+src/core/file_061.c
+src/core/file_062.c
+src/core/file_063.c
+src/metal/file_000.c
+src/metal/file_001.c
+src/metal/file_002.c
+src/metal/file_003.c
+src/metal/file_004.c
+src/metal/file_005.c
+src/metal/file_006.c
+src/metal/file_007.c
+src/metal/file_008.c
+src/metal/file_009.c
+src/metal/file_010.c
+src/metal/file_011.c
+src/metal/file_012.c
+src/metal/file_013.c
+src/metal/file_014.c
+src/metal/file_015.c
+src/metal/file_016.c
+src/metal/file_017.c
+src/metal/file_018.c
+src/metal/file_019.c
+src/metal/file_020.c
+src/metal/file_021.c
+src/metal/file_022.c
+src/metal/file_023.c
+src/metal/file_024.c
+src/metal/file_025.c
+src/metal/file_026.c
+src/metal/file_027.c
+src/metal/file_028.c
+src/metal/file_029.c
+src/metal/file_030.c
+src/metal/file_031.c
+src/metal/file_032.c
+src/metal/file_033.c
+src/metal/file_034.c
+src/metal/file_035.c
+src/metal/file_036.c
+src/metal/file_037.c
+src/metal/file_038.c
+src/metal/file_039.c
+src/metal/file_040.c
+src/metal/file_041.c
+src/metal/file_042.c
+src/metal/file_043.c
+src/metal/file_044.c
+src/metal/file_045.c
+src/metal/file_046.c
+src/metal/file_047.c
+src/metal/file_048.c
+src/metal/file_049.c
+src/metal/file_050.c
+src/metal/file_051.c
+src/metal/file_052.c
+src/metal/file_053.c
+src/metal/file_054.c
+src/metal/file_055.c
+src/metal/file_056.c
+src/metal/file_057.c
+src/metal/file_058.c
+src/metal/file_059.c
+src/metal/file_060.c
+src/metal/file_061.c
+src/metal/file_062.c
+src/metal/file_063.c
+src/io/file_000.c
+src/io/file_001.c
+src/io/file_002.c
+src/io/file_003.c
+src/io/file_004.c
+src/io/file_005.c
+src/io/file_006.c
+src/io/file_007.c
+src/io/file_008.c
+src/io/file_009.c
+src/io/file_010.c
+src/io/file_011.c
+src/io/file_012.c
+src/io/file_013.c
+src/io/file_014.c
+src/io/file_015.c
+src/io/file_016.c
+src/io/file_017.c
+src/io/file_018.c
+src/io/file_019.c
+src/io/file_020.c
+src/io/file_021.c
+src/io/file_022.c
+src/io/file_023.c
+src/io/file_024.c
+src/io/file_025.c
+src/io/file_026.c
+src/io/file_027.c
+src/io/file_028.c
+src/io/file_029.c
+src/io/file_030.c
+src/io/file_031.c
+src/io/file_032.c
+src/io/file_033.c
+src/io/file_034.c
+src/io/file_035.c
+src/io/file_036.c
+src/io/file_037.c
+src/io/file_038.c
+src/io/file_039.c
+src/io/file_040.c
+src/io/file_041.c
+src/io/file_042.c
+src/io/file_043.c
+src/io/file_044.c
+src/io/file_045.c
+src/io/file_046.c
+src/io/file_047.c
+src/io/file_048.c
+src/io/file_049.c
+src/io/file_050.c
+src/io/file_051.c
+src/io/file_052.c
+src/io/file_053.c
+src/io/file_054.c
+src/io/file_055.c
+src/io/file_056.c
+src/io/file_057.c
+src/io/file_058.c
+src/io/file_059.c
+src/io/file_060.c
+src/io/file_061.c
+src/io/file_062.c
+src/io/file_063.c
+src/test/file_000.c
+src/test/file_001.c
+src/test/file_002.c
+src/test/file_003.c
+src/test/file_004.c
+src/test/file_005.c
+src/test/file_006.c
+src/test/file_007.c
+src/test/file_008.c
+src/test/file_009.c
+src/test/file_010.c
+src/test/file_011.c
+src/test/file_012.c
+src/test/file_013.c
+src/test/file_014.c
+src/test/file_015.c
+src/test/file_016.c
+src/test/file_017.c
+src/test/file_018.c
+src/test/file_019.c
+src/test/file_020.c
+src/test/file_021.c
+src/test/file_022.c
+src/test/file_023.c
+src/test/file_024.c
+src/test/file_025.c
+src/test/file_026.c
+src/test/file_027.c
+src/test/file_028.c
+src/test/file_029.c
+src/test/file_030.c
+src/test/file_031.c
+src/test/file_032.c
+src/test/file_033.c
+src/test/file_034.c
+src/test/file_035.c
+src/test/file_036.c
+src/test/file_037.c
+src/test/file_038.c
+src/test/file_039.c
+src/test/file_040.c
+src/test/file_041.c
+src/test/file_042.c
+src/test/file_043.c
+src/test/file_044.c
+src/test/file_045.c
+src/test/file_046.c
+src/test/file_047.c
+src/test/file_048.c
+src/test/file_049.c
+src/test/file_050.c
+src/test/file_051.c
+src/test/file_052.c
+src/test/file_053.c
+src/test/file_054.c
+src/test/file_055.c
+src/test/file_056.c
+src/test/file_057.c
+src/test/file_058.c
+src/test/file_059.c
+src/test/file_060.c
+src/test/file_061.c
+src/test/file_062.c
+src/test/file_063.c<|im_end|><|im_start|>assistant
+256 files across src/core, src/metal, src/io, src/test. Want me to focus on src/metal?<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-3fa3c6041db0 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a headline, a one-sentence deck, and five search keywords for the passage.
+
+Passage:
+In the orchard ledger, every tree had a row for pruning, pests, harvest weight, and weather notes. The oldest entries were written by a farmer who never used abbreviations; later entries became shorter as the farm grew. A new manager wanted to replace the ledger with a tablet form, but kept one blank field labeled 'odd observations' after discovering that several good decisions had started as remarks that did not fit any box.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-6748b2c4776a language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage as a formal memo while preserving every factual detail.
+
+Passage:
+The bookshop window once displayed bestsellers in perfect rows. A new bookseller replaced them with pairs: a cookbook beside a travel memoir, a history beside a novel, a children's atlas beside a book about birds. Sales became less predictable but more varied. Customers said the window felt like a conversation instead of a ranking.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-2fdb0f0ff1dc language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Summarize the passage in three concise bullet points.
+
+Passage:
+The bakery changed its queue after the owner realized that customers waiting for coffee blocked the bread shelves. A painted line on the floor helped for a week, then failed during the Saturday rush. The best solution was less decorative: move the sugar, cups, and lids away from the register. Average waiting time fell, and the staff stopped having to apologize for a problem that had never been caused by impatience.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-325d9fcd28d7 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short FAQ with four questions and direct answers.
+
+Passage:
+In the restaurant kitchen, the radio was tuned low enough that customers could not hear it and high enough that cooks could recognize the song. The owner thought it was a distraction until a busy night when the radio failed and the staff lost their rhythm. The music had been acting as a shared clock, marking prep, service, cleanup, and the moment everyone could finally sit down.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-ea4702bea32c language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Copy-edit the passage for clarity. Keep the meaning, but improve flow and sentence rhythm.
+
+Passage:
+A neighborhood map drawn by residents looked inaccurate to professional surveyors because distances were distorted. The bus stop, pharmacy, laundromat, and playground appeared much larger than the courthouse or bank. The planner kept the distortion because it revealed what official maps often hide: the city experienced by walking with a stroller, carrying groceries, or looking for shade is not the same city measured from above.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-a90f71953ccb agent nothink =====
+<|im_start|>system
+You are opencode, a terminal-based coding assistant. Resolve user tasks by inspecting the repository, planning a minimal change, and applying it. Use the bash, read, edit, and grep tools as needed.<|im_end|><|im_start|>user
+tell me about ds4.c and ds4_server.c<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ds4.c first 60 lines elided ...<|im_end|><|im_start|>tool
+ds4_server.c first 60 lines elided ...<|im_end|><|im_start|>assistant
+ds4.c is the model graph runtime; ds4_server.c is the HTTP/chat layer that drives it.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-cc8be5a7aec6 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short dialogue between two people who disagree but listen carefully.
+
+Passage:
+The community theater sold out after it moved rehearsals into the front room where passersby could hear the music. People who would never read a poster stopped to ask about costumes, borrowed folding chairs, or offered old curtains for the set. The director said the change worked because it made preparation visible. The audience felt invited before anyone asked them to buy a ticket.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-9b8213725989 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a constructive critique of the decision or design described in the passage.
+
+Passage:
+Residents complained that the apartment elevator was slow, but the repair company found no mechanical fault. The building manager placed a mirror beside the doors, then added a board with local notices and lost keys. Complaints dropped because waiting felt shorter when people had something useful to read. The elevator had not changed; the experience of waiting had.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-9561a39dee45 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Summarize the passage in three concise bullet points.
+
+Passage:
+The bookshop window once displayed bestsellers in perfect rows. A new bookseller replaced them with pairs: a cookbook beside a travel memoir, a history beside a novel, a children's atlas beside a book about birds. Sales became less predictable but more varied. Customers said the window felt like a conversation instead of a ranking.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-5e146b2e6d73 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+The desert well was marked on maps as unreliable, but the older guides still visited it after winter rains. They knew the water rose slowly through cracked stone and disappeared before summer. A research team installed a sensor and confirmed the pattern, yet the guides' calendar was more useful than the graph because it included wind, animal tracks, and stories about years when the rains arrived late.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-afcfe8165203 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Extract people, places, organizations, problems, actions, and outcomes as compact JSON.
+
+Passage:
+The city planted two thousand street trees after a summer in which the hospital recorded an unusual rise in heat exhaustion. Sensors showed that shaded sidewalks were often eight degrees cooler than exposed ones. Shop owners first worried that construction would block their windows, but many later said people lingered longer outside their stores. The largest challenge was not planting the trees; it was watering them during their first three dry seasons.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-5c3b739713aa agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+what does sample_argmax do? read it<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+static int sample_argmax(const float *logits, int n) {
+    int best = 0;
+    float best_v = logits[0];
+    for (int i = 1; i < n; i++) {
+        if (logits[i] > best_v) {
+            best_v = logits[i];
+            best = i;
+        }
+    }
+    return best;
+}
+<|im_end|><|im_start|>assistant
+It picks the index of the largest logit by linear scan from index 1 forward, starting with index 0 as the initial best. No tie-breaker beyond first-seen.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-f327dd8c7d71 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a headline, a one-sentence deck, and five search keywords for the passage.
+
+Passage:
+A biologist's field notebook used color more than prose: blue dots for water, green lines for moss, orange circles for nests. Her assistant wanted to transcribe everything into sentences, but she kept the diagrams because they showed proximity at a glance. Years later, the sketches helped another team see that the birds nested near temporary pools only after a particular moss appeared.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-734705f117e7 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write an academic-style abstract for the passage in 120 words or fewer.
+
+Passage:
+At the council meeting, the argument was not whether the river should be cleaned, but how to measure success. Anglers wanted fish counts, parents wanted safer banks, farmers wanted predictable irrigation, and the budget office wanted milestones it could audit. The final plan used four measures and a public map updated every quarter, which made the project slower to announce but easier to defend.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-a0d9546e35bf language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compress the passage to at most 90 words without losing the causal chain.
+
+Passage:
+The festival changed ticket prices from three tiers to one suggested price with a quiet option to pay less. Revenue stayed almost the same, but attendance became more mixed by age and neighborhood. Volunteers said the new wording mattered: people did not feel they were asking for a discount; they felt they were choosing the price that let them attend and still leave space for someone else.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-db77582d6e43 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a headline, a one-sentence deck, and five search keywords for the passage.
+
+Passage:
+The night ferry crossed the lake even when the road around it was clear. Commuters liked the twenty quiet minutes between phone calls and office lights, and nurses used the benches to rest after long shifts. When the transport agency proposed canceling the route, its spreadsheet counted only tickets sold, not the ambulance trips avoided during winter, the students who reached evening classes, or the small shops that opened early because dock workers bought breakfast there.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-e430bf756592 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short dialogue between two people who disagree but listen carefully.
+
+Passage:
+In the restaurant kitchen, the radio was tuned low enough that customers could not hear it and high enough that cooks could recognize the song. The owner thought it was a distraction until a busy night when the radio failed and the staff lost their rhythm. The music had been acting as a shared clock, marking prep, service, cleanup, and the moment everyone could finally sit down.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-28baf8c9428e agent nothink =====
+<|im_start|>system
+You are opencode, a terminal-based coding assistant. Resolve user tasks by inspecting the repository, planning a minimal change, and applying it. Use the bash, read, edit, and grep tools as needed.<|im_end|><|im_start|>user
+list the top-level repository files<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+.git
+README.md
+ds4.c
+ds4_server.c
+ds4_cli.c
+ds4.h
+ds4_metal.m
+metal/
+misc/
+tests/
+gguf-tools/
+speed-bench/
+Makefile
+<|im_end|><|im_start|>assistant
+Top-level files: README.md, ds4.c, ds4_server.c, ds4_cli.c, ds4.h, ds4_metal.m, Makefile.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-186e582a28d2 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compress the passage to at most 90 words without losing the causal chain.
+
+Passage:
+The bridge inspection report listed no urgent danger, but it changed the maintenance plan anyway. Hairline cracks near the drainage holes showed that water was collecting where the original drawings assumed it would flow away. The fix was inexpensive: clean the channels twice a year and seal one joint. The important discovery was not damage, but the pattern that would eventually create it.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-2e37458f53c5 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compress the passage to at most 90 words without losing the causal chain.
+
+Passage:
+The wetland boardwalk was raised by only twelve centimeters, but that was enough to keep spring water from covering the planks. Visitors noticed the new railings and benches, not the height. The maintenance crew noticed something else: fewer people stepped off the path, so seedlings returned near the edges. A small engineering change had become a habitat change.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-b8946af9bd44 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a constructive critique of the decision or design described in the passage.
+
+Passage:
+The community theater sold out after it moved rehearsals into the front room where passersby could hear the music. People who would never read a poster stopped to ask about costumes, borrowed folding chairs, or offered old curtains for the set. The director said the change worked because it made preparation visible. The audience felt invited before anyone asked them to buy a ticket.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-6a8a49d579a3 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into Simplified Chinese, preserving names and concrete details.
+
+Passage:
+The forest trail reopened with fewer signs than before. Rangers had learned that visitors ignored crowded notice boards but noticed a single clear instruction at the exact point where a decision was needed. The new signs named the next landmark, the distance, and one safety warning. Complaints about being lost dropped, and the trail looked less like a corridor of rules.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-4ea0a5e6e024 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage as a formal memo while preserving every factual detail.
+
+Passage:
+The city planted two thousand street trees after a summer in which the hospital recorded an unusual rise in heat exhaustion. Sensors showed that shaded sidewalks were often eight degrees cooler than exposed ones. Shop owners first worried that construction would block their windows, but many later said people lingered longer outside their stores. The largest challenge was not planting the trees; it was watering them during their first three dry seasons.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-c95b984ab5ea agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+run the test suite<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+running 3 tests
+test parse_chat_request ... ok
+test render_chat_prompt_text ... ok
+test dsml_decode ... FAILED
+
+failures:
+    dsml_decode: assertion failed at tests/dsml.c:88
+<|im_end|><|im_start|>assistant
+Two passes, one failure in dsml_decode at tests/dsml.c:88. Open the file?<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-667d490c2f8c language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short FAQ with four questions and direct answers.
+
+Passage:
+A neighborhood map drawn by residents looked inaccurate to professional surveyors because distances were distorted. The bus stop, pharmacy, laundromat, and playground appeared much larger than the courthouse or bank. The planner kept the distortion because it revealed what official maps often hide: the city experienced by walking with a stroller, carrying groceries, or looking for shade is not the same city measured from above.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-40fe5a801f29 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+At the council meeting, the argument was not whether the river should be cleaned, but how to measure success. Anglers wanted fish counts, parents wanted safer banks, farmers wanted predictable irrigation, and the budget office wanted milestones it could audit. The final plan used four measures and a public map updated every quarter, which made the project slower to announce but easier to defend.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-33ac7bcad73a language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short dialogue between two people who disagree but listen carefully.
+
+Passage:
+The night ferry crossed the lake even when the road around it was clear. Commuters liked the twenty quiet minutes between phone calls and office lights, and nurses used the benches to rest after long shifts. When the transport agency proposed canceling the route, its spreadsheet counted only tickets sold, not the ambulance trips avoided during winter, the students who reached evening classes, or the small shops that opened early because dock workers bought breakfast there.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-a4c5c7cf6169 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Copy-edit the passage for clarity. Keep the meaning, but improve flow and sentence rhythm.
+
+Passage:
+The newspaper correction was longer than the original mistake. It named the incorrect statistic, explained how the reporter had misread the table, printed the correct number, and described how future data stories would be checked. Some readers mocked the length, but subscriptions rose after the editor began treating corrections as public maintenance rather than embarrassment.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-74257aad8c2a language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into Simplified Chinese, preserving names and concrete details.
+
+Passage:
+The night ferry crossed the lake even when the road around it was clear. Commuters liked the twenty quiet minutes between phone calls and office lights, and nurses used the benches to rest after long shifts. When the transport agency proposed canceling the route, its spreadsheet counted only tickets sold, not the ambulance trips avoided during winter, the students who reached evening classes, or the small shops that opened early because dock workers bought breakfast there.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-8962438011fa agent nothink =====
+<|im_start|>system
+You are Swival, a coding agent with a friendly, human-like personality. You solve tasks autonomously using the tools provided, taking the optimal decisions at every step. Keep going until the task is fully complete. Do not call tools for simple math, greetings, or unclear standalone questions. For minor ambiguity, pick the most likely intent and briefly state your choice.
+
+## Workflow
+
+- Use tools only when needed; answer plain questions directly.
+- Explore before editing: outline, list_files, grep, then read_file.
+- Use think before multi-step coding tasks, debugging, choosing alternatives, and editing code.
+- Use todo for multi-step work and mark items done as you finish.
+- One logical change at a time. Do not re-read files after editing.
+- On tool errors, use think to diagnose before retrying.
+
+## Editing
+
+- Copy old_string verbatim from read_file.
+- For multiple matches, pass line_number. Use replace_all only when every occurrence should change.
+
+## Safety
+
+- Never print secrets to the console.
+- Do not take any action that could degrade the workspace.<|im_end|><|im_start|>user
+fetch http://localhost/status and summarize<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+<html><body>
+<h1>Server status</h1>
+<pre>load=0.32 mem=78% temp=64C</pre>
+<a href="/">home</a> &amp; <a href="/docs">docs</a>
+</body></html>
+<|im_end|><|im_start|>assistant
+Server reports load 0.32, memory 78%, temperature 64C. The body is plain HTML with two links.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-0a120dad6a76 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compress the passage to at most 90 words without losing the causal chain.
+
+Passage:
+When the archive digitized its index cards, the scanner captured every coffee stain and pencil mark. Some volunteers wanted to clean the images automatically, but the archivist objected. The stains sometimes showed which boxes had been handled during a flood, and the pencil marks showed corrections made before the typed catalog existed. The project therefore stored both a clean transcription and the original image side by side.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-421df1291091 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage in plain English for a careful twelve-year-old reader.
+
+Passage:
+At the council meeting, the argument was not whether the river should be cleaned, but how to measure success. Anglers wanted fish counts, parents wanted safer banks, farmers wanted predictable irrigation, and the budget office wanted milestones it could audit. The final plan used four measures and a public map updated every quarter, which made the project slower to announce but easier to defend.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-314256d83a1c language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Copy-edit the passage for clarity. Keep the meaning, but improve flow and sentence rhythm.
+
+Passage:
+The town clock gained four minutes every week. For decades no one fixed it because train schedules had moved to phones, and the clock remained mostly ceremonial. Then the school used it for a lesson about measurement error. Students logged the drift, predicted when it would be wrong by an hour, and convinced the council that preservation sometimes means making an old thing accurate again.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-83028b2a1ea3 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+The school garden began as a science project and became a language project by accident. Students labeled the herbs in Arabic, Italian, Mandarin, Spanish, and English because those were the languages spoken at home. Parents started leaving recipes in a notebook by the gate. By spring, the teacher used the garden to discuss migration, measurement, soil chemistry, and why a word can carry a memory as well as a meaning.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-26d8af3072e4 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compress the passage to at most 90 words without losing the causal chain.
+
+Passage:
+Residents complained that the apartment elevator was slow, but the repair company found no mechanical fault. The building manager placed a mirror beside the doors, then added a board with local notices and lost keys. Complaints dropped because waiting felt shorter when people had something useful to read. The elevator had not changed; the experience of waiting had.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-df3dfe9dcad8 agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+show me the current branch<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+main
+<|im_end|><|im_start|>assistant
+Done. Output above.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-5f5d22303e19 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into natural Italian, preserving names and concrete details.
+
+Passage:
+A market cooperative printed receipts that showed the farmer's name, the distance traveled, and the date of harvest. Some customers found it charming; others found it distracting. Sales data later showed that the extra information mattered most for items people could not inspect directly, such as flour, oil, and honey. For tomatoes and peaches, smell still outweighed every sentence on the receipt.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-883896ae00e9 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into natural Spanish, preserving names and concrete details.
+
+Passage:
+A biologist's field notebook used color more than prose: blue dots for water, green lines for moss, orange circles for nests. Her assistant wanted to transcribe everything into sentences, but she kept the diagrams because they showed proximity at a glance. Years later, the sketches helped another team see that the birds nested near temporary pools only after a particular moss appeared.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-2646dd535a5e language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Identify the tone, intended audience, and two implied assumptions in the passage.
+
+Passage:
+The sewing manual used drawings instead of photographs because thread and shadows confused beginners. Each drawing exaggerated the needle, the fold, and the direction of tension. Advanced tailors found the pages plain, but new learners made fewer mistakes. The designer concluded that realism is not always the friend of instruction; sometimes the useful picture is the one that lies about scale.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-daf96d69973d language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Copy-edit the passage for clarity. Keep the meaning, but improve flow and sentence rhythm.
+
+Passage:
+The release note sounded simple: reduce startup time by warming fewer buffers. In practice the change required a careful audit of which pages were touched by the first request, which buffers were only needed after a tool call, and which allocations could be delayed without moving a latency spike into the user's first visible token. The team kept the patch small, but the test plan became longer than the code.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-2dde797e847a language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage as a formal memo while preserving every factual detail.
+
+Passage:
+The warehouse robot failed only on rainy days. Engineers first blamed the wheel encoders, then the floor markers, then the routing software. A night-shift operator finally noticed that wet umbrellas left small puddles near the entrance, and the robot slowed down whenever its front sensor saw reflected ceiling lights. The fix was a mat, a hood over the sensor, and a dashboard note that credited the operator by name.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-5542bfdf16c0 agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+count lines in ds4.c<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ 23456 ds4.c
+<|im_end|><|im_start|>assistant
+Done. Output above.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-65615998b775 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compress the passage to at most 90 words without losing the causal chain.
+
+Passage:
+At the council meeting, the argument was not whether the river should be cleaned, but how to measure success. Anglers wanted fish counts, parents wanted safer banks, farmers wanted predictable irrigation, and the budget office wanted milestones it could audit. The final plan used four measures and a public map updated every quarter, which made the project slower to announce but easier to defend.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-c5484d2869b0 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short dialogue between two people who disagree but listen carefully.
+
+Passage:
+The bakery changed its queue after the owner realized that customers waiting for coffee blocked the bread shelves. A painted line on the floor helped for a week, then failed during the Saturday rush. The best solution was less decorative: move the sugar, cups, and lids away from the register. Average waiting time fell, and the staff stopped having to apologize for a problem that had never been caused by impatience.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-924a1945f6b1 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Extract people, places, organizations, problems, actions, and outcomes as compact JSON.
+
+Passage:
+The school garden began as a science project and became a language project by accident. Students labeled the herbs in Arabic, Italian, Mandarin, Spanish, and English because those were the languages spoken at home. Parents started leaving recipes in a notebook by the gate. By spring, the teacher used the garden to discuss migration, measurement, soil chemistry, and why a word can carry a memory as well as a meaning.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-8fb681967696 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Summarize the passage in three concise bullet points.
+
+Passage:
+The newspaper correction was longer than the original mistake. It named the incorrect statistic, explained how the reporter had misread the table, printed the correct number, and described how future data stories would be checked. Some readers mocked the length, but subscriptions rose after the editor began treating corrections as public maintenance rather than embarrassment.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-76b05e0cc551 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Identify the tone, intended audience, and two implied assumptions in the passage.
+
+Passage:
+The festival changed ticket prices from three tiers to one suggested price with a quiet option to pay less. Revenue stayed almost the same, but attendance became more mixed by age and neighborhood. Volunteers said the new wording mattered: people did not feel they were asking for a discount; they felt they were choosing the price that let them attend and still leave space for someone else.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-a1c656030dea agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+find TODO comments<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+ds4_server.c:842:    // TODO: revisit when streaming usage is finalized
+<|im_end|><|im_start|>assistant
+Done. Output above.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-c956e820257b language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into natural Spanish, preserving names and concrete details.
+
+Passage:
+The school garden began as a science project and became a language project by accident. Students labeled the herbs in Arabic, Italian, Mandarin, Spanish, and English because those were the languages spoken at home. Parents started leaving recipes in a notebook by the gate. By spring, the teacher used the garden to discuss migration, measurement, soil chemistry, and why a word can carry a memory as well as a meaning.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-ee55515e7395 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage in plain English for a careful twelve-year-old reader.
+
+Passage:
+The sewing manual used drawings instead of photographs because thread and shadows confused beginners. Each drawing exaggerated the needle, the fold, and the direction of tension. Advanced tailors found the pages plain, but new learners made fewer mistakes. The designer concluded that realism is not always the friend of instruction; sometimes the useful picture is the one that lies about scale.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-78c6cec6bc82 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write an academic-style abstract for the passage in 120 words or fewer.
+
+Passage:
+The newspaper correction was longer than the original mistake. It named the incorrect statistic, explained how the reporter had misread the table, printed the correct number, and described how future data stories would be checked. Some readers mocked the length, but subscriptions rose after the editor began treating corrections as public maintenance rather than embarrassment.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-ada283335354 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Extract people, places, organizations, problems, actions, and outcomes as compact JSON.
+
+Passage:
+The forest trail reopened with fewer signs than before. Rangers had learned that visitors ignored crowded notice boards but noticed a single clear instruction at the exact point where a decision was needed. The new signs named the next landmark, the distance, and one safety warning. Complaints about being lost dropped, and the trail looked less like a corridor of rules.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-af0cfa100215 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into Simplified Chinese, preserving names and concrete details.
+
+Passage:
+The release note sounded simple: reduce startup time by warming fewer buffers. In practice the change required a careful audit of which pages were touched by the first request, which buffers were only needed after a tool call, and which allocations could be delayed without moving a latency spike into the user's first visible token. The team kept the patch small, but the test plan became longer than the code.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-f5da30db7c09 agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+list .metal kernels<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+metal/dsv4_hc.metal
+metal/moe.metal
+metal/sampling.metal
+<|im_end|><|im_start|>assistant
+Done. Output above.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-5d158f597247 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+The release note sounded simple: reduce startup time by warming fewer buffers. In practice the change required a careful audit of which pages were touched by the first request, which buffers were only needed after a tool call, and which allocations could be delayed without moving a latency spike into the user's first visible token. The team kept the patch small, but the test plan became longer than the code.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-569b7e101a5d language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a headline, a one-sentence deck, and five search keywords for the passage.
+
+Passage:
+The newspaper correction was longer than the original mistake. It named the incorrect statistic, explained how the reporter had misread the table, printed the correct number, and described how future data stories would be checked. Some readers mocked the length, but subscriptions rose after the editor began treating corrections as public maintenance rather than embarrassment.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-c156dbcda9d2 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Identify the tone, intended audience, and two implied assumptions in the passage.
+
+Passage:
+At the council meeting, the argument was not whether the river should be cleaned, but how to measure success. Anglers wanted fish counts, parents wanted safer banks, farmers wanted predictable irrigation, and the budget office wanted milestones it could audit. The final plan used four measures and a public map updated every quarter, which made the project slower to announce but easier to defend.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-c36b66ad299d language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Identify the tone, intended audience, and two implied assumptions in the passage.
+
+Passage:
+The weather bulletin was read in three languages because the fishing boats did not all share the same crew language. The broadcaster learned to keep numbers in the same order every time: wind direction, wind speed, wave height, visibility, and warnings. Crews said the repeated structure helped even when reception was poor, because a missing word could often be inferred from its position in the sequence.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-06face9ce2d0 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Write a constructive critique of the decision or design described in the passage.
+
+Passage:
+The sewing manual used drawings instead of photographs because thread and shadows confused beginners. Each drawing exaggerated the needle, the fold, and the direction of tension. Advanced tailors found the pages plain, but new learners made fewer mistakes. The designer concluded that realism is not always the friend of instruction; sometimes the useful picture is the one that lies about scale.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-a1605d895641 agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+open Makefile<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+CC ?= cc
+CFLAGS ?= -O3 -ffast-math ...
+<|im_end|><|im_start|>assistant
+Done. Output above.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-0399ca34df9c language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short dialogue between two people who disagree but listen carefully.
+
+Passage:
+The warehouse robot failed only on rainy days. Engineers first blamed the wheel encoders, then the floor markers, then the routing software. A night-shift operator finally noticed that wet umbrellas left small puddles near the entrance, and the robot slowed down whenever its front sensor saw reflected ceiling lights. The fix was a mat, a hood over the sensor, and a dashboard note that credited the operator by name.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-5933a5e7faa1 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Turn the passage into a short dialogue between two people who disagree but listen carefully.
+
+Passage:
+At the council meeting, the argument was not whether the river should be cleaned, but how to measure success. Anglers wanted fish counts, parents wanted safer banks, farmers wanted predictable irrigation, and the budget office wanted milestones it could audit. The final plan used four measures and a public map updated every quarter, which made the project slower to announce but easier to defend.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-23cf045be309 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Identify the tone, intended audience, and two implied assumptions in the passage.
+
+Passage:
+The museum received a letter from a visitor who had recognized her grandmother in the background of a 1934 photograph. Until then, the archive listed the woman only as an unnamed station worker. The visitor sent a copy of a diary page, a payroll stub, and a recipe card written in the same hand. The curator updated the catalog entry, then wrote a short exhibit label about how public memory can repair an incomplete institutional record.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-8753084f6e1c language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Copy-edit the passage for clarity. Keep the meaning, but improve flow and sentence rhythm.
+
+Passage:
+The mountain train was built to carry ore, not tourists. Its narrow tracks followed the river, crossed three timber bridges, and climbed through tunnels cut by hand. After the mine closed, the town nearly removed the line, but teachers argued it was the clearest way to show students how geography shaped local industry. Today the train runs only on weekends, slowly enough for passengers to see the old signal posts and the terraces where workers once kept vegetable gardens.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-0a633e7801ff language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+The language class stopped beginning with grammar charts and started with lost-and-found objects: a glove, a ticket, a key, a cracked phone case. Students described who might own each item and what had happened before it was lost. Grammar still appeared, but as a tool for making the story precise. Attendance improved because every lesson began with a small mystery.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-d35337967c9c agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+fix typo in README<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+edit applied: 1 occurrence replaced
+<|im_end|><|im_start|>assistant
+Done. Output above.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-6a408d60af47 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+The newspaper correction was longer than the original mistake. It named the incorrect statistic, explained how the reporter had misread the table, printed the correct number, and described how future data stories would be checked. Some readers mocked the length, but subscriptions rose after the editor began treating corrections as public maintenance rather than embarrassment.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-ef7a14cef8f1 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Compare the passage with a similar situation from another field, making the analogy explicit.
+
+Passage:
+Residents complained that the apartment elevator was slow, but the repair company found no mechanical fault. The building manager placed a mirror beside the doors, then added a board with local notices and lost keys. Complaints dropped because waiting felt shorter when people had something useful to read. The elevator had not changed; the experience of waiting had.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-a0e3c7c2ba92 language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Rewrite the passage in plain English for a careful twelve-year-old reader.
+
+Passage:
+The bridge inspection report listed no urgent danger, but it changed the maintenance plan anyway. Hairline cracks near the drainage holes showed that water was collecting where the original drawings assumed it would flow away. The fix was inexpensive: clean the channels twice a year and seal one joint. The important discovery was not damage, but the pattern that would eventually create it.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-e4aa9439afbc language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into Simplified Chinese, preserving names and concrete details.
+
+Passage:
+The bookshop window once displayed bestsellers in perfect rows. A new bookseller replaced them with pairs: a cookbook beside a travel memoir, a history beside a novel, a children's atlas beside a book about birds. Sales became less predictable but more varied. Customers said the window felt like a conversation instead of a ranking.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT language-44669fdd5bea language nothink =====
+<|im_start|>system
+You are a careful language assistant. Preserve meaning, names, numbers, and causal relationships. Do not invent facts not supported by the text.<|im_end|><|im_start|>user
+Translate the passage into Simplified Chinese, preserving names and concrete details.
+
+Passage:
+The mountain train was built to carry ore, not tourists. Its narrow tracks followed the river, crossed three timber bridges, and climbed through tunnels cut by hand. After the mine closed, the town nearly removed the line, but teachers argued it was the clearest way to show students how geography shaped local industry. Today the train runs only on weekends, slowly enough for passengers to see the old signal posts and the terraces where workers once kept vegetable gardens.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-4b5f4363ba56 agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+note that streaming is on<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+todo updated: 2 open, 0 done
+<|im_end|><|im_start|>assistant
+Done. Output above.<|im_end|><|im_start|>assistant
+<think></think>
+===== DS4_IMATRIX_PROMPT agent-4e60c6ba00cc agent nothink =====
+<|im_start|>system
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Refuse to write malicious code.
+IMPORTANT: Before you begin work, think about what the code you are editing is supposed to do based on the filenames and directory structure.<|im_end|><|im_start|>user
+record decision about quant width<|im_end|><|im_start|>assistant
+<|im_end|><|im_start|>tool
+noted
+<|im_end|><|im_start|>assistant
+Done. Output above.<|im_end|><|im_start|>assistant
+<think></think>

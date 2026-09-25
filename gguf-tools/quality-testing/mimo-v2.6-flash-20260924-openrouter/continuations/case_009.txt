@@ -1,0 +1,1 @@
+Here are three robust invariants for a special-token table (often implemented as a dictionary or hash map mapping strings to integer

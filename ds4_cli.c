@@ -529,7 +529,8 @@ static void build_prompt(ds4_engine *engine, const cli_generation_options *gen, 
 static void cli_apply_model_sampling_defaults(
         ds4_engine             *engine,
         cli_generation_options *gen) {
-    if (!engine || !gen || !ds4_engine_is_glm_dsa(engine)) return;
+    if (!engine || !gen ||
+        (!ds4_engine_is_glm_dsa(engine) && !ds4_engine_is_mimo2(engine))) return;
 
     if (!gen->temperature_set) gen->temperature = 1.0f;
     if (!gen->top_p_set) gen->top_p = 0.95f;
@@ -2020,6 +2021,13 @@ static cli_config parse_options(int argc, char **argv) {
             c.engine.glm_mtp = true;
         } else if (!strcmp(arg, "--mtp-model")) {
             c.engine.mtp_path = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--dflash")) {
+            c.engine.dflash_path = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--dflash-draft")) {
+            c.engine.dflash_draft_tokens = parse_int(need_arg(&i, argc, argv, arg), arg);
+        } else if (!strcmp(arg, "--dflash-p-min")) {
+            c.engine.dflash_p_min = parse_float_range(need_arg(&i, argc, argv, arg), arg, 0.0f, 1.0f);
+            c.engine.dflash_p_min_set = true;
         } else if (!strcmp(arg, "--mtp-draft")) {
             c.engine.mtp_draft_tokens = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--mtp-margin")) {

@@ -191,6 +191,11 @@ static void print_model_runtime(FILE *fp, const help_colors *c,
             opt(fp, c, "--dspark-confidence F", "Enable DSpark with confidence pruning threshold 0..1. Greedy/opportunistic default: Metal 0.6, CUDA/ROCm 0.7; exact sampling: 0.8");
             opt(fp, c, "--mtp-exact-sampling", "Preserve the ordinary temperature distribution instead of accepting target-matching greedy drafts directly.");
             opt(fp, c, "--dspark-strict", "Load DSpark support but keep target-only decode.");
+            if (tool == DS4_HELP_DS4) {
+                opt(fp, c, "--dflash FILE", "MiMo V2.6 Flash: DFlash block-drafter sidecar GGUF for speculative decoding (Metal).");
+                opt(fp, c, "--dflash-draft N", "Maximum DFlash drafts per block, 1..block size - 1. Default: 7");
+                opt(fp, c, "--dflash-p-min P", "Stop drafting before the drafts' joint probability falls below P, 0..1. Default: 0.4; 0 keeps the full block");
+            }
         } else if (tool == DS4_HELP_BENCH) {
             opt(fp, c, "--dspark", "Benchmark greedy DSpark using the support GGUF passed with --mtp-model.");
             opt(fp, c, "--dspark-confidence F", "DSpark confidence pruning threshold 0..1.");
@@ -211,7 +216,7 @@ static void print_sampling(FILE *fp, const help_colors *c, bool full, ds4_help_t
     opt(fp, c, "--top-p F", "Nucleus sampling probability.");
     opt(fp, c, "--min-p F", "Keep tokens scoring at least F times the top token.");
     opt(fp, c, "--seed N", "Sampling seed for reproducible non-greedy runs.");
-    para(fp, c, "GLM CLI and agent runs default to temperature 1.0, top-p 0.95, and min-p 0 unless those options are set explicitly.");
+    para(fp, c, "GLM and MiMo CLI and agent runs default to temperature 1.0, top-p 0.95, and min-p 0 unless set explicitly.");
     opt(fp, c, "--think", "Use normal thinking mode (V4.1: effort 75).");
     opt(fp, c, "--think-max", "Use maximum thinking (V4.1: 100; V4: requires ctx >= 393216).");
     if (tool == DS4_HELP_DS4 || tool == DS4_HELP_AGENT)
@@ -351,7 +356,7 @@ static void print_server_api(FILE *fp, const help_colors *c) {
     opt(fp, c, "--batched-session N", "Keep N resident sessions and batch decode-ready requests.");
     opt(fp, c, "--mixed-prefill-quantum N", "Prefill chunk while generations are active. Default: 128; GLM-5.3 minimum: 1024");
     para(fp, c, "Endpoints: /v1/chat/completions, /v1/responses, /v1/completions, and /v1/messages.");
-    para(fp, c, "Model endpoint aliases include deepseek-v4-flash and deepseek-v4-pro; both serve the loaded GGUF.");
+    para(fp, c, "Model aliases include deepseek-v4-flash and mimo-v2.6-flash; each serves the loaded GGUF.");
     fputc('\n', fp);
 }
 
@@ -566,7 +571,7 @@ static void print_topic(FILE *fp, const help_colors *c, ds4_help_tool tool, cons
     else if (tool == DS4_HELP_AGENT && streq(topic, "tools")) {
         title(fp, c, "Agent Tool System");
         para(fp, c, "The agent can read, search, write, edit, run bash, and browse through Chrome-backed web tools.");
-        para(fp, c, "DeepSeek-family models emit DSML tool calls; GLM models use native <tool_call> syntax. Both are rendered live in the terminal.");
+        para(fp, c, "DeepSeek models emit DSML tool calls; GLM, Qwen, and MiMo use native <tool_call> syntax, rendered live in the terminal.");
         para(fp, c, "Edit uses exact old/new replacement. --edit-upto enables anchored replacements between a unique head and tail.");
         fputc('\n', fp);
     } else if (tool == DS4_HELP_BENCH && streq(topic, "benchmark")) print_bench_specific(fp, c);

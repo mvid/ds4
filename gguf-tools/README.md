@@ -250,6 +250,95 @@ Pass `--quant q4` to the audit as well when checking a Q4 file.
 The audit checks the complete layout, all non-expert tensors, sampled experts
 and native Engram rows. It does not replace [inference quality tests](quality-testing/deepseek-v4.1-flash-20260910/README.md).
 
+## Convert MiMo V2.6 Flash
+
+Use the pinned `XiaomiMiMo/MiMo-V2.6-Flash-RL` revision
+`5711b268169967567844e1e560e8a3966da959b1`. Download its
+`config.json`, `tokenizer.json`, `chat_template.jinja`, index,
+`model_mtp.safetensors`, and all `model_pp0_ep*_shard0.safetensors` files.
+The converter excludes audio and vision tensors. NumPy and the quantizer
+library are required:
+
+```sh
+make -C gguf-tools libds4quants.dylib
+python3 gguf-tools/mimo26_quantize.py \
+  --hf models/MiMo-V2.6-Flash-RL \
+  --source-revision 5711b268169967567844e1e560e8a3966da959b1 \
+  --quant q2 --out gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn-bootstrap.gguf
+./ds4 -m gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn-bootstrap.gguf \
+  --ctx 32768 \
+  --imatrix-dataset gguf-tools/imatrix/dataset/mimo26-v2.6-flash-clean.txt \
+  --imatrix-out gguf/MiMo-V2.6-Flash-imatrix-clean.dat \
+  --imatrix-max-prompts 200
+python3 gguf-tools/mimo26_quantize.py \
+  --hf models/MiMo-V2.6-Flash-RL \
+  --source-revision 5711b268169967567844e1e560e8a3966da959b1 \
+  --quant q2 --imatrix gguf/MiMo-V2.6-Flash-imatrix-clean.dat \
+  --out gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf
+python3 gguf-tools/mimo26_quantize.py \
+  --hf models/MiMo-V2.6-Flash-RL \
+  --source-revision 5711b268169967567844e1e560e8a3966da959b1 \
+  --quant mxfp4 --out gguf/MiMo-V2.6-Flash-MXFP4-Q8Attn.gguf
+```
+
+The clean corpus uses MiMo ChatML agentic and technical prompts and excludes
+the 100 official fixture questions. An earlier imatrix included all 100 and
+must not be used for independent parity scores. The uncalibrated Q2 bootstrap
+answered `84 * 3 / 2` incorrectly; rebuilt Q2 and AttnQ4 answered 126.
+Their first-token agreement with Xiaomi was 65/100 and 62/100, versus 92/100
+for MXFP4, so both resident Q2 tiers remain experimental. See
+[MiMo QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash). Q2 uses IQ2_XXS
+gate/up and Q2_K down experts. MXFP4 repacks expert codes and scales exactly.
+Both use Q8_0 dense blocks and embeddings; AttnQ4 uses Q4_K attention.
+
+Use `--dry-run` to inspect the 51-layer plan without writing weights.
+`--resume` continues an interrupted write only with the same converter script,
+quantizer binary and imatrix. `--attn-quant q4` changes attention projections
+to Q4_K; name that output `*-AttnQ4.gguf` and use the same imatrix.
+The collected matrix has routed-expert entries only; Q4 attention uses
+weight-energy importance.
+Trunk fused QKV stores four TP ranks internally; dequantization regroups
+rank-local Q/K/V rows. The MTP QKV tensors are already in global order.
+
+Audit each output against the pinned source:
+
+```sh
+python3 gguf-tools/mimo26_validate_gguf.py \
+  gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf \
+  --hf models/MiMo-V2.6-Flash-RL --quant q2 \
+  --imatrix gguf/MiMo-V2.6-Flash-imatrix-clean.dat
+python3 gguf-tools/mimo26_validate_gguf.py \
+  gguf/MiMo-V2.6-Flash-MXFP4-Q8Attn.gguf \
+  --hf models/MiMo-V2.6-Flash-RL --quant mxfp4
+```
+
+The optional DFlash drafter uses the pinned `dflash/` sidecar. Its learned
+mask embedding differs from the target model's token embedding and is stored
+in the separate support GGUF:
+
+```sh
+hf download XiaomiMiMo/MiMo-V2.6-Flash-RL \
+  dflash/config.json dflash/dflash_draft_model.safetensors \
+  dflash/model.safetensors.index.json dflash/mask_embedding.pt \
+  --revision 5711b268169967567844e1e560e8a3966da959b1 \
+  --local-dir models/MiMo-V2.6-Flash-RL
+python3 gguf-tools/mimo26_dflash_convert.py \
+  --hf models/MiMo-V2.6-Flash-RL \
+  --out gguf/MiMo-V2.6-Flash-DFlash-Q8.gguf
+python3 gguf-tools/mimo26_dflash_validate_gguf.py \
+  gguf/MiMo-V2.6-Flash-DFlash-Q8.gguf \
+  --hf models/MiMo-V2.6-Flash-RL
+./ds4 -m gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf \
+  --dflash gguf/MiMo-V2.6-Flash-DFlash-Q8.gguf \
+  --dflash-draft 3 --ctx 4096 --temp 0 \
+  -p "What is 84 * 3 / 2?"
+```
+
+The validator checks all 64 tensors against the source. DFlash uses five
+layers and an eight-row draft block; `--dflash-draft` limits the proposed
+suffix. See [speculative decoding](../docs/SPECULATIVE_DECODING.md) for the
+verified acceptance path and measured settings.
+
 ## Convert A DSpark Support Checkpoint
 
 The DSpark Flash checkpoint is published as Hugging Face safetensors and stores

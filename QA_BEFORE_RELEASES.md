@@ -1422,6 +1422,9 @@ context sweeps and memory limits.
 | M3 Ultra 512 GB, Metal | GLM 5.3 Flash Q4 with Q8 KDA/head, 2048-token prompt | 437.62 t/s | 24.74 t/s |
 | Two M5 Max, Metal RDMA TP | GLM 5.2 IQ2_XXS, 4096-token prefill, 256 teacher-forced decode tokens | about 214 t/s | about 16.7 t/s |
 | M5 Max, Metal | GLM 5.3 full Q2 SSD, 16 GiB expert budget, section 7 commands | 12.59 t/s median | 6.14 t/s median |
+| M5 Max 128 GB, Metal | MiMo V2.6 Flash bootstrap Q2 resident, 4096-token prefill, 128-token decode | 669.60 t/s | 38.06 t/s |
+| M5 Max 128 GB, Metal | GLM 5.3 Flash Q2 resident, matched run | 452.20 t/s | 26.46 t/s |
+| M5 Max 128 GB, Metal SSD | MiMo V2.6 Flash MXFP4, 4096-token prefill, 128-token decode | 38.74 t/s | 13.31 t/s |
 | DGX Spark, CUDA | GLM 5.3 Flash Q2, 2048-token prefill, 16 decode tokens | 531.39 t/s | 14.35 t/s |
 | Strix Halo, ROCm | Flash 0731 IQ2, temperature-1 128-token code prompt | - | 16.26 ordinary; 12.28 opportunistic; 13.52 exact t/s |
 | 8x L40S, CUDA TP | Flash Q4, 2048-token prefill benchmark | 1524.84 t/s | 46.93 t/s |
@@ -2062,6 +2065,95 @@ At 8K context and a 1024-token chunk, planned memory is about 42.86/70.87 GiB
 for Q2/Q4, excluding the 95.37 GiB disk table. Check physical memory and swap,
 not only this plan. Repeat conventional Metal with Metal 4 disabled, and test
 a physical pre-M5 device before advertising its performance or memory fit.
+
+## 20. MiMo V2.6 Flash
+
+Pinned source: `XiaomiMiMo/MiMo-V2.6-Flash-RL` revision
+`5711b268169967567844e1e560e8a3966da959b1`. Text-only Metal GGUFs
+contain 508 tensors. The first 86.35 GiB Q2 artifact used an imatrix from 200
+prompts that included all 100 official fixture prompts word for word (SHA-256
+`cd385eaf714cae08cec72491040c8a61b5b8a012878fcf852a7f31a28bd4ff37`).
+Its official parity would be biased. The hard-smoke and core prompts below are
+separate; their Q2 scores describe this first artifact.
+
+The release Q2 and 84.13 GiB AttnQ4 files were rebuilt from the zero-overlap
+200-prompt corpus `gguf-tools/imatrix/dataset/mimo26-v2.6-flash-clean.txt`
+(SHA-256 `7ad3f432d6cdd6c5a04080555d0664563d50c6732518c3173b9f88ac87572dd0`,
+maximum fixture word Jaccard 0.278). Resident bootstrap Q2 collected 35,106
+tokens and 13,199,856 routes, covering 12,020/12,032 expert slots (99.90%).
+The clean imatrix SHA-256 is
+`184ca5c03645e30e69ab81e6a0aa1ed85442268960d8b6e98f1523c73d916214`.
+The 12 unvisited experts use weight-energy importance. Both rebuilt files
+passed 508 tensor layouts and 27 sampled experts against source. The
+uncalibrated bootstrap answered `84 * 3 / 2` incorrectly; clean Q2, AttnQ4,
+and the 156.85 GiB MXFP4 tier answered 126. The 1.45 GiB DFlash sidecar
+has 64 validated tensors, including its learned mask embedding.
+
+| Hard-smoke at temperature 0 | First-imatrix Q2 resident | MXFP4 SSD |
+| --- | ---: | ---: |
+| 2048-token cap | 7/12 (1 failed, 4 incomplete) | 8/12 (1 failed, 3 incomplete) |
+| Incomplete cases retried at 4096 tokens | 8/12 (2 failed, 2 incomplete) | 8/12 (1 failed, 3 incomplete) |
+
+The first-imatrix Q2 core run with a 2048-token cap passed 43/92 (7 failed, 42 incomplete).
+Five of its incomplete cases were retested at native budgets: four passed and
+one remained incomplete after 15,491 tokens. The other 37 were retried with
+up to 4096 tokens: seven passed, three failed and 27 remained incomplete.
+Combined Q2 core result: 54/92 passed, 10 failed, 28 incomplete. This mixed
+budget score is not a matched quantization comparison.
+
+| Held-out suite, temperature 0 | Leak-free Q2 resident | MXFP4 SSD |
+| --- | ---: | ---: |
+| Hard-smoke, 2048 tokens with one 4096-token retry | 8/12 (0 failed, 4 incomplete) | 8/12 (1 failed, 3 incomplete) |
+| Core, bounded as below | 53/92 (7 failed, 32 incomplete) | 58/92 (9 failed, 25 incomplete) |
+
+Clean Q2 core first pass scored 42/92 (3 failed, 47 incomplete). Its final
+case budgets were 2048 tokens for 45 cases and 4096 for 47. MXFP4 core ran
+in four retained tranches: final budgets were 2048 tokens for 31 cases and
+4096 for 61. Both tiers passed 45 of the same cases; MXFP4 alone passed 13,
+Q2 alone passed 8, and neither passed 26. These mixed-budget core scores are
+descriptive, not a controlled quantization comparison.
+
+The same-day M5 Max 4K-context benchmark CSVs are
+[`mimo26-q2-m5max-20260924.csv`](speed-bench/mimo26-q2-m5max-20260924.csv)
+and [`glm53-flash-q2-m5max-20260924.csv`](speed-bench/glm53-flash-q2-m5max-20260924.csv).
+Bootstrap MiMo Q2 prefill was 669.60 t/s versus 452.20 for GLM, and decode
+38.06 versus 26.46 t/s. Both ratios exceed the 0.85 go/no-go floor. The
+MXFP4 SSD run recorded 38.74 prefill and 13.31 decode t/s, above the 10 t/s
+streaming floor.
+
+Native MTP committed within the established 2.0-logit near-argmax bound on
+calibrated Q2; one batched numerical tie diverged from plain decode at token
+22 (gap 0.1547). The MXFP4 oracle produced identical tokens on all three
+prompts. On first-imatrix Q2 with the exported Olympiad hard-smoke prompt,
+plain decode generated 39.63 t/s; MTP generated 27.68 t/s with 100/311
+drafts accepted (32.2%).
+That 0.70x ratio triggered the DFlash port. Its three-prompt oracle produced
+identical greedy tokens with up to eight committed per call. A dumped draft
+block matched an independent NumPy reference (minimum hidden-row cosine
+0.9999998). On the same Olympiad prompt, DFlash default draft width seven
+generated 32.22 t/s; `--dflash-draft 3` generated 41.69 t/s.
+
+The first-party Xiaomi OpenRouter route supplied 100 temperature-zero,
+no-thinking continuations without a system message. All responses report
+`xiaomi/mimo-v2.6-flash` from Xiaomi; local and API prompt-token counts agree
+on 100/100. Neither endpoint supplies token logprobs, so API probability
+metrics are unavailable. These numbers compare the local teacher-forced
+continuation to hosted FP8 text:
+
+| MiMo GGUF | First-token match | Local average NLL | Average greedy LCP |
+| --- | ---: | ---: | ---: |
+| Clean Q2, Q8 attention | 65/100 | 0.339311 | 6.99 |
+| Clean Q2, Q4 attention | 62/100 | 0.356618 | 6.23 |
+| MXFP4 SSD, Q8 attention | 92/100 | 0.262704 | 16.81 |
+
+The GLM 5.3 Flash Q2 reference in section 6 is 89/100 first-token matches.
+MXFP4 clears that reference, while both resident Q2 files fall short. MXFP4
+and clean Q2 differ in API-match status on 29 cases, which caps their direct
+local first-token agreement at 71/100; the plan's 89/100 pair gate fails.
+The equivalent upper bound for MXFP4 versus AttnQ4 is 66/100. See the
+[fixture README](gguf-tools/quality-testing/mimo-v2.6-flash-20260924-openrouter/README.md)
+for request settings and case-level results. Do not sign off Q2 as
+quality-equivalent to source MXFP4.
 
 ## 19. Release Sign-off
 

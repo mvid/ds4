@@ -296,6 +296,7 @@ typedef enum {
     AGENT_TOOL_SYNTAX_GLM,
     AGENT_TOOL_SYNTAX_DSML41,
     AGENT_TOOL_SYNTAX_QWEN,
+    AGENT_TOOL_SYNTAX_MIMO,
 } agent_tool_syntax;
 
 typedef enum {
@@ -410,6 +411,7 @@ static int agent_read_default_lines(agent_worker *w);
 static int agent_compact_reserve_tokens(agent_worker *w);
 
 static agent_tool_syntax agent_tool_syntax_for_engine(ds4_engine *engine) {
+    if (ds4_engine_is_mimo2(engine)) return AGENT_TOOL_SYNTAX_MIMO;
     if (ds4_engine_is_qwen4(engine)) return AGENT_TOOL_SYNTAX_QWEN;
     return ds4_engine_is_glm_dsa(engine) ? AGENT_TOOL_SYNTAX_GLM
          : ds4_engine_is_deepseek41(engine) ? AGENT_TOOL_SYNTAX_DSML41
@@ -424,7 +426,8 @@ static const char *agent_dsml_tag_name(agent_tool_syntax syntax, const char *nam
 }
 
 static const char *agent_tool_start(agent_tool_syntax syntax) {
-    if (syntax == AGENT_TOOL_SYNTAX_GLM || syntax == AGENT_TOOL_SYNTAX_QWEN) return "<tool_call>";
+    if (syntax == AGENT_TOOL_SYNTAX_GLM || syntax == AGENT_TOOL_SYNTAX_QWEN ||
+        syntax == AGENT_TOOL_SYNTAX_MIMO) return "<tool_call>";
     return syntax == AGENT_TOOL_SYNTAX_DSML41 ? "<｜DSML｜ calls>" : "<｜DSML｜tool_calls>";
 }
 
@@ -436,9 +439,10 @@ static bool agent_tool_syntax_assistant_turn_uses_eos(agent_tool_syntax syntax) 
     return syntax != AGENT_TOOL_SYNTAX_GLM;
 }
 
-/* GLM and Qwen both open a call with <tool_call> and render as chat messages */
+/* These models open calls with <tool_call> and render tool results as chat messages. */
 static bool agent_syntax_is_xml_tool_call(agent_tool_syntax syntax) {
-    return syntax == AGENT_TOOL_SYNTAX_GLM || syntax == AGENT_TOOL_SYNTAX_QWEN;
+    return syntax == AGENT_TOOL_SYNTAX_GLM || syntax == AGENT_TOOL_SYNTAX_QWEN ||
+           syntax == AGENT_TOOL_SYNTAX_MIMO;
 }
 
 static void agent_worker_append_assistant_turn_end(agent_worker *w) {
@@ -1006,7 +1010,8 @@ static agent_config parse_options(int argc, char **argv) {
 static void agent_apply_model_sampling_defaults(
         ds4_engine               *engine,
         agent_generation_options *gen) {
-    if (!engine || !gen || !ds4_engine_is_glm_dsa(engine)) return;
+    if (!engine || !gen ||
+        (!ds4_engine_is_glm_dsa(engine) && !ds4_engine_is_mimo2(engine))) return;
 
     if (!gen->temperature_set) gen->temperature = 1.0f;
     if (!gen->top_p_set) gen->top_p = 0.95f;
@@ -1436,7 +1441,49 @@ static char *agent_build_qwen_tools_prompt(bool edit_upto, bool vision) {
 
 static char *agent_dsml41_tools_prompt(const char *source);
 
+static char *agent_build_mimo_tools_prompt(void) {
+    const char *intro = "You are provided with the following tools:\n\n<tools>";
+    const char *wrap = "\n{\"type\":\"function\",\"function\":";
+    const char *tail = "\n</tools>";
+    size_t lines = 0;
+    for (const char *p = agent_glm_tool_schemas; *p; p++) lines += *p == '\n';
+    const size_t cap = strlen(intro) + strlen(agent_glm_tool_schemas) +
+                       lines * (strlen(wrap) + 1) + strlen(tail) + 1;
+    char *out = xmalloc(cap);
+    size_t used = (size_t)snprintf(out, cap, "%s", intro);
+    const char *p = agent_glm_tool_schemas;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len) used += (size_t)snprintf(out + used, cap - used,
+                                         "%s%.*s}", wrap, (int)len, p);
+        p += len + (nl ? 1 : 0);
+    }
+    snprintf(out + used, cap - used, "%s", tail);
+    return out;
+}
+
+static char *agent_build_mimo_rules(bool edit_upto) {
+    const char *intro =
+        "You are a coding agent running in a local workspace. Use tools for local file and system work.\n\n"
+        AGENT_TOOL_CONTRACTS
+        "Inside string values, escape a literal </parameter> as &lt;/parameter>. "
+        "Use &amp;lt;/parameter> to write that spelling literally.\n"
+        "Call functions with <tool_call><function=NAME><parameter=KEY>VALUE</parameter></function></tool_call> without extra newlines. "
+        "Close </think> before a tool call.\n"
+        "- " AGENT_EDIT_TARGET_RULE "\n";
+    const char *edit = edit_upto ? agent_glm_tools_prompt_edit_upto
+                                 : agent_glm_tools_prompt_edit_exact;
+    const size_t cap = strlen(intro) + strlen(edit) +
+                       strlen(agent_glm_tools_prompt_rules_tail) + 1;
+    char *out = xmalloc(cap);
+    snprintf(out, cap, "%s%s%s", intro, edit, agent_glm_tools_prompt_rules_tail);
+    return out;
+}
+
 static char *agent_build_tools_prompt(ds4_engine *engine, bool edit_upto) {
+    if (agent_tool_syntax_for_engine(engine) == AGENT_TOOL_SYNTAX_MIMO)
+        return agent_build_mimo_tools_prompt();
     if (agent_tool_syntax_for_engine(engine) == AGENT_TOOL_SYNTAX_QWEN)
         return agent_build_qwen_tools_prompt(edit_upto, ds4_engine_has_vision(engine));
     if (agent_tool_syntax_for_engine(engine) == AGENT_TOOL_SYNTAX_GLM)
@@ -1474,6 +1521,10 @@ static const char agent_qwen_syntax_reminder[] =
     "Tool-call syntax reminder:\n"
     "<tool_call>\n<function=$TOOL_NAME>\n<parameter=$PARAMETER_NAME>\n$PARAMETER_VALUE\n</parameter>\n"
     "</function>\n</tool_call>\n";
+
+static const char agent_mimo_syntax_reminder[] =
+    "Tool-call syntax reminder: "
+    "<tool_call><function=$TOOL_NAME><parameter=$PARAMETER_NAME>$PARAMETER_VALUE</parameter></function></tool_call>\n";
 
 #define AGENT_SYSTEM_PROMPT_REMINDER_TOKENS 50000
 
@@ -1538,9 +1589,12 @@ static char *agent_build_system_prompt_reminder(ds4_engine *engine,
     char *tools = agent_build_tools_prompt(engine, edit_upto);
     const char *start = "\n\n[System prompt reminder follows.]\n";
     const char *end = "[End system prompt reminder.]\n\n";
-    const size_t len = strlen(start) + strlen(tools) + strlen(end) + 1;
+    char *rules = ds4_engine_is_mimo2(engine) ? agent_build_mimo_rules(edit_upto) : NULL;
+    const size_t len = strlen(start) + strlen(tools) +
+                       (rules ? strlen(rules) + 1 : 0) + strlen(end) + 1;
     char *out = xmalloc(len);
-    snprintf(out, len, "%s%s%s", start, tools, end);
+    snprintf(out, len, "%s%s%s%s%s", start, tools, rules ? "\n" : "", rules ? rules : "", end);
+    free(rules);
     free(tools);
     return out;
 }
@@ -1561,6 +1615,11 @@ static void agent_append_system_prompt(ds4_engine *engine, ds4_tokens *tokens,
         ds4_tokenize_rendered_chat(engine, tools_prompt, tokens);
     }
     free(tools_prompt);
+    if (ds4_engine_is_mimo2(engine)) {
+        char *rules = agent_build_mimo_rules(edit_upto);
+        ds4_chat_append_message(engine, tokens, "system", rules);
+        free(rules);
+    }
 
     if (!extra || !extra[0]) return;
     size_t n = strlen(extra);
@@ -2002,7 +2061,7 @@ static bool agent_qwen_param_close_tail(const char *tail, size_t len, bool *comp
 static bool agent_tool_value_close_tail(agent_tool_syntax syntax,
                                         const char *tail, size_t len,
                                         bool *complete) {
-    if (syntax == AGENT_TOOL_SYNTAX_QWEN)
+    if (syntax == AGENT_TOOL_SYNTAX_QWEN || syntax == AGENT_TOOL_SYNTAX_MIMO)
         return agent_qwen_param_close_tail(tail, len, complete);
     if (syntax == AGENT_TOOL_SYNTAX_GLM)
         return agent_glm_arg_value_close_tail(tail, len, complete);
@@ -2335,7 +2394,7 @@ static void agent_dsml_finish(agent_dsml_parser *p) {
  * until enough bytes arrive, while malformed completed input switches to
  * AGENT_DSML_ERROR so the model gets a retryable tool error. */
 static void agent_dsml_parse(agent_dsml_parser *p) {
-    if (p->syntax == AGENT_TOOL_SYNTAX_QWEN) {
+    if (p->syntax == AGENT_TOOL_SYNTAX_QWEN || p->syntax == AGENT_TOOL_SYNTAX_MIMO) {
         agent_qwen_tool_parse(p);
         return;
     }
@@ -4240,6 +4299,7 @@ static void agent_stream_start_dsml(agent_stream_renderer *sr, bool ignored) {
     sr->dsml_start_len = 0;
     sr->post_think_gap = false;
     agent_trace(sr->renderer->worker, "%s tool start detected%s",
+                sr->syntax == AGENT_TOOL_SYNTAX_MIMO ? "mimo" :
                 sr->syntax == AGENT_TOOL_SYNTAX_QWEN ? "qwen" :
                 sr->syntax == AGENT_TOOL_SYNTAX_GLM ? "glm" : "dsml",
                 ignored ? " inside thinking" : "");
@@ -7856,6 +7916,31 @@ static void test_agent_tool_argument_literal_markup(void) {
     }
 }
 
+static void test_agent_mimo_compact_tool_call(void) {
+    char *tools = agent_build_mimo_tools_prompt();
+    const char *prefix = "You are provided with the following tools:\n\n<tools>\n";
+    AGENT_TEST_ASSERT(strncmp(tools, prefix, strlen(prefix)) == 0);
+    AGENT_TEST_ASSERT(strstr(tools, "{\"type\":\"function\",\"function\":{\"name\":\"write\"") != NULL);
+    AGENT_TEST_ASSERT(strstr(tools, "}\n</tools>") != NULL);
+    free(tools);
+
+    const char *chunks[] = {
+        "<tool_call><function=write><parameter=path>/tmp/a</parameter><parameter=content>alpha",
+        "&lt;/parameter>omega</par",
+        "ameter></function></tool_call>",
+    };
+    agent_dsml_parser p;
+    char *out = agent_test_stream_capture(AGENT_TOOL_SYNTAX_MIMO, chunks, 3, &p, NULL);
+    AGENT_TEST_ASSERT(p.state == AGENT_DSML_DONE);
+    AGENT_TEST_ASSERT(p.calls.len == 1);
+    AGENT_TEST_ASSERT(!strcmp(p.calls.v[0].name, "write"));
+    AGENT_TEST_ASSERT(!strcmp(agent_tool_arg_value(&p.calls.v[0], "path"), "/tmp/a"));
+    AGENT_TEST_ASSERT(!strcmp(agent_tool_arg_value(&p.calls.v[0], "content"), "alpha</parameter>omega"));
+    AGENT_TEST_ASSERT(strstr(out, "<tool_call>") == NULL);
+    free(out);
+    agent_dsml_parser_free(&p);
+}
+
 static void test_agent_glm_stream_ignores_tool_inside_think(void) {
     const char *chunks[] = {
         "<think>plan <tool",
@@ -8176,6 +8261,7 @@ static void ds4_agent_unit_tests_run(void) {
     test_agent_qwen_tool_parser_two_calls_and_error();
     test_agent_qwen_stream_tool_call_chunked();
     test_agent_qwen_argument_markers_bytewise();
+    test_agent_mimo_compact_tool_call();
     test_agent_glm_stream_ignores_tool_inside_think();
     test_agent_glm_stream_greedy_sampling_boundaries();
     test_agent_dsml_stream_tool_call_chunked();
@@ -10703,6 +10789,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         {
             malformed_tool = true;
             snprintf(dsml.error, sizeof(dsml.error),
+                     tool_syntax == AGENT_TOOL_SYNTAX_MIMO ? "incomplete MiMo tool call" :
                      tool_syntax == AGENT_TOOL_SYNTAX_QWEN ? "incomplete Qwen tool call" :
                      tool_syntax == AGENT_TOOL_SYNTAX_GLM ? "incomplete GLM tool call" :
                      "incomplete DSML tool call");
@@ -10728,6 +10815,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         } else if (malformed_tool) {
             agent_tool_observation_puts(
                 &observation,
+                tool_syntax == AGENT_TOOL_SYNTAX_MIMO ? "Tool error: invalid MiMo tool call: " :
                 tool_syntax == AGENT_TOOL_SYNTAX_QWEN ? "Tool error: invalid Qwen tool call: " :
                 tool_syntax == AGENT_TOOL_SYNTAX_GLM ? "Tool error: invalid GLM tool call: " :
                 "Tool error: invalid DSML tool call: ");
@@ -10735,7 +10823,8 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 &observation, dsml.error[0] ? dsml.error : "parse error");
             agent_tool_observation_puts(&observation, "\n");
             agent_tool_observation_puts(
-                &observation, tool_syntax == AGENT_TOOL_SYNTAX_QWEN ?
+                &observation, tool_syntax == AGENT_TOOL_SYNTAX_MIMO ?
+                agent_mimo_syntax_reminder : tool_syntax == AGENT_TOOL_SYNTAX_QWEN ?
                 agent_qwen_syntax_reminder : tool_syntax == AGENT_TOOL_SYNTAX_GLM ?
                 agent_glm_syntax_reminder : tool_syntax == AGENT_TOOL_SYNTAX_DSML41 ?
                 agent_dsml41_syntax_reminder : agent_dsml_syntax_reminder);

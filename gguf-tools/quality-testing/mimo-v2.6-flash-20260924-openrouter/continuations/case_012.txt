@@ -1,0 +1,1 @@
+Certamente. Ecco una comparazione dettagliata tra l'uso di `mmap` per accedere

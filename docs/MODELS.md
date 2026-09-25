@@ -174,6 +174,60 @@ Ordinary decode is the default. Enable the embedded draft block with `--mtp`:
 No second model file is needed. See [sampling behavior](SPECULATIVE_DECODING.md)
 before choosing between the default opportunistic mode and exact sampling.
 
+## MiMo V2.6 Flash
+
+| Target | Approximate file size | Use |
+| --- | ---: | --- |
+| `mimo26-q2` | 86.3 GiB | Experimental resident tier on a 128 GB Mac |
+| `mimo26-mxfp4` | 156.8 GiB | Resident on 256 GB, or SSD streaming on 128 GB |
+
+Resident Q2 is not quality-qualified: on 100 first-party Xiaomi no-thinking
+continuations, clean Q2 matched the first token 65 times, versus 92 for MXFP4.
+Their direct pair agreement cannot exceed 71/100, below the 89/100 release
+gate. Prefer MXFP4 SSD streaming when quality matters; its measured 4K decode
+rate was 13.31 t/s. See [MiMo QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash).
+
+MiMo uses 9 global and 39 sliding-window attention layers, 256 routed experts
+(top 8), and three embedded MTP blocks. These text-only files omit the vision
+and audio encoders. Metal is the supported backend. Start with `--ctx 32768`;
+MiMo selects its own prefill chunk, so do not pass `--prefill-chunk`.
+Directional steering files are supported with `--dir-steering-file`.
+
+MiMo uses ChatML turns and compact `<tool_call>` function calls. The CLI and agent
+default to temperature 1.0, top-p 0.95, and min-p 0 unless set explicitly.
+`--nothink` requests a direct reply; the server also exposes
+`mimo-v2.6-flash-chat` and `mimo-v2.6-flash-reasoner` aliases.
+
+```sh
+./ds4 -m gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf --ctx 32768 -p "What is 84 * 3 / 2?"
+./ds4-agent -m gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf --ctx 32768
+```
+
+For MXFP4 on a 128 GB Mac, use the automatic expert-cache budget:
+
+```sh
+./ds4 -m gguf/MiMo-V2.6-Flash-MXFP4-Q8Attn.gguf --ssd-streaming --ctx 4096
+```
+
+The Q2 example requires the calibrated file; the uncalibrated bootstrap failed
+the local arithmetic smoke. [Conversion](../gguf-tools/README.md#convert-mimo-v26-flash)
+collects the routed-expert imatrix before producing the resident Q2 file.
+
+The optional 1.45 GiB DFlash sidecar is built from the pinned checkpoint using
+the [converter guide](../gguf-tools/README.md#convert-mimo-v26-flash). For
+block drafting with the resident Q2 target:
+
+```sh
+./ds4 -m gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf \
+  --dflash gguf/MiMo-V2.6-Flash-DFlash-Q8.gguf \
+  --dflash-draft 3 --ctx 4096 --temp 0 \
+  -p "What is 84 * 3 / 2?"
+```
+
+The download repository `antirez/mimo-v2.6-flash-gguf` is reserved for
+publication. Until it exists, build files from the pinned Xiaomi checkpoint
+with the commands in [the converter guide](../gguf-tools/README.md#convert-mimo-v26-flash).
+
 ## Full GLM 5.3 and GLM 5.2
 
 Full GLM 5.3 Q2 is about 197 GiB. Use a sufficiently large machine or streaming:

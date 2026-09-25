@@ -77,6 +77,88 @@ perfect, disengaging after repeated second-draft rejections.
 `DS4_QWEN4_MTP_DEPTH=2` or `=3` fixes the depth;
 `0` (default) is the adaptive policy.
 
+## MiMo V2.6 Flash: built-in MTP
+
+The three nextn layers (`blk.48..50`) ship in both MiMo GGUFs:
+
+```sh
+./ds4 -m gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf --mtp
+```
+
+Each cycle drafts up to `DS4_MIMO2_MTP_DEPTH` tokens (1 to 3, default 2).
+Every depth is conditioned on the same trunk hidden state and on the previous
+depth's draft token, then the target verifies the evaluated token and all
+drafts in one batch. Rejected rows get their 128-row sliding-window cache
+slots back from a pre-verify snapshot. The MTP layers keep their own short
+cache history, restarted after any rejection. Metal only.
+
+At non-zero temperature MiMo always uses exact sampling: a draft is accepted
+with its target probability, and a rejection samples the replacement from the
+remaining distribution. `--mtp-exact-sampling` is not needed.
+`--mtp-timing` prints verify cycles, draft acceptance, and committed tokens per
+verify when each session ends. `./ds4_test --mimo2-mtp-verify` with
+`DS4_TEST_MODEL` set to a MiMo GGUF and `DS4_TEST_GLM_MTP=1` compares greedy
+MTP output with plain greedy decoding. The batched verifier rounds differently
+from one-token decode, so a near tie can continue differently; the test then
+replays the speculative tokens through plain decode and requires each to be
+within 2.0 logits of the plain argmax, the same bound the GLM and DSpark
+oracles use. It checks that bound, not strict token identity. (On the
+first-imatrix Q2 file the first divergence came at token 22 with a worst gap of
+0.15; the MXFP4 file matched byte for byte on all three prompts.)
+
+First-imatrix Q2 on an M5 Max 128 GB decoded the Olympiad prompt at
+39.63 t/s without speculation and 27.68 t/s with MTP (100 of 311 drafts
+accepted). MTP is correct under the near-argmax oracle but slower on this
+workload. Benchmark it before enabling it for throughput.
+
+## MiMo V2.6 Flash: DFlash
+
+Xiaomi ships a DFlash block drafter next to the checkpoint
+(`dflash/`: 5 layers, block 8, 1.47B parameters). Convert it once with
+`gguf-tools/mimo26_dflash_convert.py`, then pass the sidecar:
+
+```sh
+./ds4 -m gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf \
+  --dflash gguf/MiMo-V2.6-Flash-DFlash-Q8.gguf
+```
+
+The drafter reads the target's residual stream after layers 0, 11, 23, 35
+and 47 for every committed token. `fc` and `hidden_norm` turn those five
+rows into one context row, and each draft layer keeps its context K/V in a
+1024-row ring. Each cycle drafts a block of eight rows: the sampled token
+through the target embedding, then seven copies of the trained mask
+embedding. The block attends to its whole self (no causal mask) and to
+the context inside the 1024-token window, and the target output head
+turns rows 1..7 into seven drafts in one pass. The draft layers are
+Qwen3-style: per-head q/k RMSNorm, RoPE on 64 of 128 dims, a per-head sink
+logit and values scaled by 0.612. The target verifies the sampled token
+and the drafts in one batch. It commits the prefix that matches its
+argmax, restores the rejected rows' sliding-window cache slots, and adds
+only the committed rows to the drafter context.
+
+`--dflash-draft N` caps the drafts per block (1 to 7, default 7).
+`--dflash-p-min P` stops before the draft where the product of the draft
+softmax maxima, the drafter's estimate that every draft so far is
+accepted, falls below `P` (default 0.4; 0 always sends the full block).
+Every verified row costs its own routed experts and output head, so short
+blocks are cheaper when the drafter is unsure. Sampling at non-zero
+temperature uses the same exact p/q rule as MiMo MTP. `--dflash` and
+`--mtp` are alternatives. Metal only. After a disk KV-cache restore the
+drafter context starts empty and refills as tokens are committed, which
+lowers acceptance but never changes output.
+On that first-imatrix Q2 Olympiad prompt, plain decode was 39.63 t/s, the
+default seven-draft setting 32.22 t/s, and `--dflash-draft 3` 41.69 t/s.
+The shorter setting had only one matched run; benchmark your workload before
+assuming a speedup.
+
+The session prints verify cycles, drafts, acceptance and committed tokens
+per verify when it ends. `./ds4_test --mimo2-dflash-verify` with
+`DS4_TEST_MODEL` set to a MiMo GGUF and `DS4_TEST_DFLASH` set to the sidecar
+applies the 2.0-logit oracle to three prompts. It also fails unless some
+block commits three or more tokens and calls average more than 1.5 committed
+tokens. `make test-dflash-kernels` checks the drafter kernels against a
+double-precision reference without a model.
+
 ## Sampling and reproducibility
 
 At temperature zero, accepted drafts must match the target's greedy

@@ -1,0 +1,4 @@
+Here is a description of how binary search finds an insertion point in a sorted array.
+
+### The Core Concept
+Binary search

@@ -4,6 +4,7 @@ set -e
 GLM_UNSLOTH_REPO="unsloth/GLM-5.2-GGUF"
 GLM_ANTIREZ_REPO="antirez/GLM-5.2-GGUF"
 GLM53_REPO="antirez/glm-5.3-flash-gguf"
+MIMO26_REPO="antirez/mimo-v2.6-flash-gguf"
 GLM53_FULL_REPO="antirez/glm-5.3-gguf"
 QWEN38_REPO="antirez/qwen3.8-flash-next-gguf"
 QWEN38_MMPROJ_REPO="ggml-org/Qwen3.8-Flash-Next-GGUF"
@@ -33,6 +34,8 @@ GLM_ANTIREZ_Q2_FILE="GLM-5.2-UD-Q2_K_RoutedQ2K.gguf"
 GLM_ANTIREZ_Q4_FILE="GLM-5.2-UD-Q4_K_RoutedQ4K.gguf"
 GLM53_FULL_Q2_FILE="GLM-5.3-UD-IQ2_XXS_RoutedIQ2XXS_blk78Q2K.gguf"
 GLM53_Q2_FILE="GLM-5.3-Flash-Q2.gguf"
+MIMO26_Q2_FILE="MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf"
+MIMO26_MXFP4_FILE="MiMo-V2.6-Flash-MXFP4-Q8Attn.gguf"
 GLM53_Q4_FILE="GLM-5.3-Flash-Q4_K.gguf"
 GLM53_FP8_FILE="GLM-5.3-Flash-FP8.gguf"
 GLM53_VISION_FILE="GLM-5.3-Flash-Vision-Encoder.gguf"
@@ -76,6 +79,8 @@ Usage:
   ./download_model.sh glm-antirez-q4 [--token TOKEN]
   ./download_model.sh glm53-full-q2 [--token TOKEN]
   ./download_model.sh glm53-q2 [--token TOKEN]
+  ./download_model.sh mimo26-q2 [--token TOKEN]
+  ./download_model.sh mimo26-mxfp4 [--token TOKEN]
   ./download_model.sh glm53-q4 [--token TOKEN]
   ./download_model.sh glm53-fp8 [--token TOKEN]
   ./download_model.sh glm53-vision [--token TOKEN]
@@ -183,6 +188,13 @@ Targets:
   glm53-q2
        GLM 5.3 Flash imatrix Q2 GGUF, about 90 GiB on disk. Intended for
        resident inference on 128 GB Macs.
+
+  mimo26-q2
+       MiMo V2.6 Flash 2-bit routed experts, about 86 GiB. Fits in 128 GB RAM.
+
+  mimo26-mxfp4
+       MiMo V2.6 Flash native MXFP4 experts, about 157 GiB. Requires 256 GB
+       for resident inference or --ssd-streaming on a 128 GB Mac.
 
   glm53-q4
        GLM 5.3 Flash Q4_K GGUF, about 178 GiB on disk. Intended for two-Mac
@@ -342,6 +354,16 @@ case "$MODEL" in
     glm53-q2)
         REPO=$GLM53_REPO
         MODEL_FILE=$GLM53_Q2_FILE
+        FORCE_HF_DOWNLOAD=1
+        ;;
+    mimo26-q2)
+        REPO=$MIMO26_REPO
+        MODEL_FILE=$MIMO26_Q2_FILE
+        FORCE_HF_DOWNLOAD=1
+        ;;
+    mimo26-mxfp4)
+        REPO=$MIMO26_REPO
+        MODEL_FILE=$MIMO26_MXFP4_FILE
         FORCE_HF_DOWNLOAD=1
         ;;
     glm53-q4)

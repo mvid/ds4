@@ -131,6 +131,11 @@ typedef struct {
 typedef struct {
     const char *model_path;
     const char *mtp_path;
+    /* MiMo DFlash block-drafter sidecar GGUF (--dflash). */
+    const char *dflash_path;
+    int dflash_draft_tokens;    /* 0 = block size - 1 */
+    float dflash_p_min;         /* used when dflash_p_min_set */
+    bool dflash_p_min_set;
     const char *vision_path;
     ds4_backend backend;
     int n_threads;
@@ -308,6 +313,7 @@ int ds4_engine_model_id(ds4_engine *e);
 bool ds4_engine_is_glm_dsa(ds4_engine *e);
 bool ds4_engine_is_glm53(ds4_engine *e);
 bool ds4_engine_is_qwen4(ds4_engine *e);
+bool ds4_engine_is_mimo2(ds4_engine *e);
 /* Qwen3.8 reasoning-effort system instruction for a think mode (NULL when none) */
 const char *ds4_qwen4_reasoning_effort_text(ds4_think_mode mode);
 const char *ds4_backend_name(ds4_backend backend);

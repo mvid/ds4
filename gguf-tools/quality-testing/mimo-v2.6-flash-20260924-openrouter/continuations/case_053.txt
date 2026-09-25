@@ -1,0 +1,1 @@
+Ecco uno schema JSON minimo e standard per una chiamata a una funzione (tool call), tipicamente

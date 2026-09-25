@@ -4903,6 +4903,57 @@ kernel void kernel_mul_mv_slots6_mxfp4_pair_swiglu_f32(
     (void)tiitg;
 }
 
+kernel void kernel_mul_mv_slots8_mxfp4_pair_swiglu_f32(
+        constant ds4_metal_args_mul_mv_id &args,
+        constant ds4_metal_dsv4_moe_swiglu_weight_args &act,
+        device const char *gate0, device const char *gate1,
+        device const char *gate2, device const char *gate3,
+        device const char *gate4, device const char *gate5,
+        device const char *gate6, device const char *gate7,
+        device const char *up0, device const char *up1,
+        device const char *up2, device const char *up3,
+        device const char *up4, device const char *up5,
+        device const char *up6, device const char *up7,
+        device const char *src1,
+        device char *dst_gate,
+        device char *dst_up,
+        device char *dst_mid,
+        device const char *weights,
+        threadgroup char *shmem [[threadgroup(0)]],
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tiitg [[thread_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
+    const int iid1 = tgpig.z / args.nei0;
+    const int idx = tgpig.z % args.nei0;
+    device const char *gate_expert = gate0;
+    device const char *up_expert = up0;
+    switch (idx) {
+    case 1: gate_expert = gate1; up_expert = up1; break;
+    case 2: gate_expert = gate2; up_expert = up2; break;
+    case 3: gate_expert = gate3; up_expert = up3; break;
+    case 4: gate_expert = gate4; up_expert = up4; break;
+    case 5: gate_expert = gate5; up_expert = up5; break;
+    case 6: gate_expert = gate6; up_expert = up6; break;
+    case 7: gate_expert = gate7; up_expert = up7; break;
+    default: break;
+    }
+
+    const uint64_t pair_row = (uint64_t)iid1 * args.nei0 + (uint64_t)idx;
+    device const float *route =
+        (device const float *)(weights + pair_row * act.weight_stride);
+    device char *gate_cur = dst_gate + pair_row * args.ne0 * sizeof(float);
+    device char *up_cur = dst_up + pair_row * args.ne0 * sizeof(float);
+    device char *mid_cur = dst_mid + pair_row * act.mid_row_stride;
+    device const char *x_cur = src1 + (uint64_t)(idx % args.ne11) * args.nb11 +
+        (uint64_t)iid1 * args.nb12;
+    tgpig.z = 0;
+    kernel_mul_mv_mxfp4_pair_swiglu_impl(args, act, gate_expert, up_expert,
+                                         x_cur, gate_cur, up_cur, mid_cur,
+                                         route[0], shmem, tgpig, tiisg, sgitg);
+    (void)tiitg;
+}
+
 kernel void kernel_mul_mv_table_q4_K_pair_swiglu_f32(
         constant ds4_metal_args_mul_mv_id & args,
         constant ds4_metal_dsv4_moe_swiglu_weight_args & act,
@@ -6725,6 +6776,57 @@ kernel void kernel_mul_mv_slots6_mxfp4_sum6_f32(
         case 3: expert_base = src03; break;
         case 4: expert_base = src04; break;
         case 5: expert_base = src05; break;
+        default: break;
+        }
+        device const float *y =
+            (device const float *)(token_src1 + (uint64_t)slot * args.nb11);
+        sumf += ds4_mxfp4_accumulate_rows(expert_base, args.nb01, y,
+                                           args.ne00, first_row, args.ne0,
+                                           lut, tiisg);
+    }
+
+    device float *out = (device float *)(dst + (uint64_t)token * args.nb1);
+    FOR_UNROLL (short row = 0; row < N_R0_MXFP4; row++) {
+        if (first_row + row < (uint32_t)args.ne0) {
+            const float value = simd_sum(sumf[row]);
+            if (tiisg == 0) out[first_row + row] = value;
+        }
+    }
+    (void)tiitg;
+}
+
+kernel void kernel_mul_mv_slots8_mxfp4_sum8_f32(
+        constant ds4_metal_args_mul_mv_id &args,
+        device const char *src00, device const char *src01,
+        device const char *src02, device const char *src03,
+        device const char *src04, device const char *src05,
+        device const char *src06, device const char *src07,
+        device const char *src1,
+        device char *dst,
+        threadgroup char *shmem [[threadgroup(0)]],
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tiitg [[thread_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
+    const short NSG = FC_mul_mv_nsg;
+    const uint32_t first_row = (uint32_t)((tgpig.x * NSG + sgitg) * N_R0_MXFP4);
+    const uint32_t token = tgpig.y;
+    device const char *token_src1 = src1 + (uint64_t)token * args.nb12;
+    threadgroup float *lut = (threadgroup float *)shmem;
+    if (sgitg == 0) lut[tiisg] = ds4_metal_mxfp4_values[tiisg & 15];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float2 sumf = 0.0f;
+    for (int slot = 0; slot < 8; slot++) {
+        device const char *expert_base = src00;
+        switch (slot) {
+        case 1: expert_base = src01; break;
+        case 2: expert_base = src02; break;
+        case 3: expert_base = src03; break;
+        case 4: expert_base = src04; break;
+        case 5: expert_base = src05; break;
+        case 6: expert_base = src06; break;
+        case 7: expert_base = src07; break;
         default: break;
         }
         device const float *y =

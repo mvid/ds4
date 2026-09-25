@@ -1,0 +1,4 @@
+Ecco una funzione semplice e diretta per trovare la mediana di tre numeri.
+
+```python
+def

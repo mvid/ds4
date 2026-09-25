@@ -7130,6 +7130,201 @@ static void test_mtp_verify_depth(void) {
     ds4_tokens_free(&prompt);
 }
 
+#define TEST_MIMO2_MTP_MAXGEN 160
+#define TEST_MIMO2_MTP_TIE 2.0f
+
+/* Plain greedy decode, one ds4_session_eval per token. */
+static bool test_plain_greedy(ds4_engine *engine, const ds4_tokens *prompt,
+                              int max_tokens, int *out, int *out_len) {
+    *out_len = 0;
+    ds4_session *session = NULL;
+    TEST_ASSERT(ds4_session_create(&session, engine, prompt->len + max_tokens + 16) == 0);
+    if (!session) return false;
+    char err[160];
+    bool ok = ds4_session_sync(session, prompt, err, sizeof(err)) == 0;
+    TEST_ASSERT(ok);
+    const int eos = ds4_token_eos(engine);
+    int n = 0;
+    while (ok && n < max_tokens) {
+        const int token = ds4_session_argmax(session);
+        if (token == eos) break;
+        out[n++] = token;
+        if (n >= max_tokens) break;
+        ok = ds4_session_eval(session, token, err, sizeof(err)) == 0;
+        TEST_ASSERT(ok);
+    }
+    *out_len = n;
+    ds4_session_free(session);
+    return ok;
+}
+
+/* MiMo native MTP: greedy speculative decoding must commit the plain greedy
+ * stream, with drafts verified in multi-row blocks.  A divergence passes
+ * only as a numerical tie: every committed token must then stay within
+ * TEST_MIMO2_MTP_TIE logits of the plain-decode argmax at its position.
+ * Needs DS4_TEST_MODEL=<MiMo GGUF> and DS4_TEST_GLM_MTP=1; skips otherwise. */
+static void test_mimo2_mtp_verify(void) {
+    ds4_engine *engine = test_get_engine(false);
+    if (!engine || !ds4_engine_is_mimo2(engine) || ds4_engine_mtp_draft_tokens(engine) < 2) {
+        fprintf(stderr, "ds4-test: mimo2-mtp-verify skipped "
+                        "(set DS4_TEST_MODEL to a MiMo GGUF and DS4_TEST_GLM_MTP=1)\n");
+        return;
+    }
+    const char *prompts[3] = {
+        test_mtp_copy_prompt(),
+        "List the first twenty prime numbers, separated by commas.",
+        "Explain in four sentences why the sky is blue.",
+    };
+    int *spec = malloc((size_t)TEST_MIMO2_MTP_MAXGEN * sizeof(*spec));
+    int *plain = malloc((size_t)TEST_MIMO2_MTP_MAXGEN * sizeof(*plain));
+    TEST_ASSERT(spec && plain);
+    int widest_chunk = 0;
+    for (int p = 0; spec && plain && p < 3; p++) {
+        ds4_tokens prompt = {0};
+        ds4_chat_begin(engine, &prompt);
+        ds4_chat_append_message(engine, &prompt, "user", prompts[p]);
+        ds4_chat_append_assistant_prefix(engine, &prompt, DS4_THINK_NONE);
+        int nspec = 0, nplain = 0, max_chunk = 0;
+        const bool ok_spec = test_mtp_capture_speculative(engine, &prompt, TEST_MIMO2_MTP_MAXGEN,
+                                                          spec, &nspec, &max_chunk);
+        const bool ok_plain = test_plain_greedy(engine, &prompt, TEST_MIMO2_MTP_MAXGEN,
+                                                plain, &nplain);
+        TEST_ASSERT(ok_spec && ok_plain);
+        TEST_ASSERT(nspec > 0);
+        if (max_chunk > widest_chunk) widest_chunk = max_chunk;
+        int diverge = -1;
+        for (int i = 0; i < nspec && i < nplain; i++) {
+            if (spec[i] != plain[i]) { diverge = i; break; }
+        }
+        if (diverge < 0 && nspec != nplain) diverge = nspec < nplain ? nspec : nplain;
+        if (diverge < 0) {
+            fprintf(stderr, "ds4-test: mimo2-mtp-verify prompt %d: %d tokens identical, max_chunk=%d\n",
+                    p, nspec, max_chunk);
+        } else {
+            float worst_gap = 0.0f;
+            int worst_at = -1;
+            TEST_ASSERT(test_mtp_worst_argmax_gap(engine, &prompt, spec, nspec,
+                                                  &worst_gap, &worst_at));
+            fprintf(stderr, "ds4-test: mimo2-mtp-verify prompt %d: diverged at %d of %d/%d, "
+                            "max_chunk=%d worst_argmax_gap=%.4f at=%d\n",
+                    p, diverge, nspec, nplain, max_chunk, worst_gap, worst_at);
+            TEST_ASSERT(worst_gap <= TEST_MIMO2_MTP_TIE);
+        }
+        ds4_tokens_free(&prompt);
+    }
+    TEST_ASSERT(widest_chunk > 1);  /* some drafts were accepted in a multi-row verify */
+    free(spec);
+    free(plain);
+}
+
+#define TEST_MIMO2_DFLASH_MAXGEN 192
+
+/* MiMo DFlash (--dflash): greedy block speculation must commit the plain
+ * greedy stream (a divergence passes only as a numerical tie within 2.0
+ * logits of the plain-decode argmax, the verifier oracle's bound), and the
+ * drafter must actually carry decoding: blocks of three or more committed
+ * tokens occur and the average commit per speculative call exceeds 1.5, so
+ * a drafter that degenerates to one token per call fails.
+ * Needs DS4_TEST_MODEL=<MiMo GGUF> and DS4_TEST_DFLASH=<sidecar GGUF>. */
+static void test_mimo2_dflash_verify(void) {
+    const char *sidecar = getenv("DS4_TEST_DFLASH");
+    if (!sidecar || !sidecar[0]) {
+        fprintf(stderr, "ds4-test: mimo2-dflash-verify skipped (set DS4_TEST_DFLASH to a DFlash sidecar GGUF)\n");
+        return;
+    }
+    ds4_engine *engine = NULL;
+    ds4_engine_options opt = {
+        .model_path = test_model_path(),
+        .backend = test_model_backend(),
+        .ssd_streaming = test_env_bool("DS4_TEST_SSD_STREAMING"),
+        .ssd_streaming_cold = test_env_bool("DS4_TEST_SSD_STREAMING_COLD"),
+        .ssd_streaming_cache_experts = test_env_u32("DS4_TEST_SSD_STREAMING_CACHE_EXPERTS"),
+        .ssd_streaming_cache_bytes = test_env_gib("DS4_TEST_SSD_STREAMING_CACHE_GB"),
+        .dflash_path = sidecar,
+    };
+    TEST_ASSERT(ds4_engine_open(&engine, &opt) == 0);
+    if (!engine) return;
+    if (!ds4_engine_is_mimo2(engine)) {
+        fprintf(stderr, "ds4-test: mimo2-dflash-verify skipped (DS4_TEST_MODEL is not MiMo)\n");
+        ds4_engine_close(engine);
+        return;
+    }
+    TEST_ASSERT(ds4_engine_mtp_draft_tokens(engine) > 2);
+    const char *prompts[3] = {
+        test_mtp_copy_prompt(),
+        "List the first twenty prime numbers, separated by commas.",
+        "What is 84 * 3 / 2? Show each step.",
+    };
+    int *spec = malloc((size_t)TEST_MIMO2_DFLASH_MAXGEN * sizeof(*spec));
+    int *plain = malloc((size_t)TEST_MIMO2_DFLASH_MAXGEN * sizeof(*plain));
+    TEST_ASSERT(spec && plain);
+    int widest = 0, total_tokens = 0, total_calls = 0;
+    for (int p = 0; spec && plain && p < 3; p++) {
+        ds4_tokens prompt = {0};
+        ds4_chat_begin(engine, &prompt);
+        ds4_chat_append_message(engine, &prompt, "user", prompts[p]);
+        ds4_chat_append_assistant_prefix(engine, &prompt, DS4_THINK_NONE);
+
+        ds4_session *session = NULL;
+        char err[160];
+        int nspec = 0, calls = 0;
+        TEST_ASSERT(ds4_session_create(&session, engine, prompt.len + TEST_MIMO2_DFLASH_MAXGEN + 16) == 0);
+        bool ok = session && ds4_session_sync(session, &prompt, err, sizeof(err)) == 0;
+        TEST_ASSERT(ok);
+        const int eos = ds4_token_eos(engine);
+        bool stop = false;
+        while (ok && !stop && nspec < TEST_MIMO2_DFLASH_MAXGEN) {
+            const int token = ds4_session_argmax(session);
+            if (token == eos) break;
+            int toks[17];
+            const int ntok = ds4_session_eval_speculative_argmax(
+                session, token, TEST_MIMO2_DFLASH_MAXGEN - nspec, eos, toks,
+                (int)(sizeof(toks) / sizeof(toks[0])), err, sizeof(err));
+            if (ntok <= 0) { ok = false; TEST_ASSERT(false); break; }
+            TEST_ASSERT(toks[0] == token);
+            calls++;
+            if (ntok > widest) widest = ntok;
+            for (int j = 0; j < ntok; j++) {
+                if (toks[j] == eos) { stop = true; break; }
+                spec[nspec++] = toks[j];
+                if (nspec >= TEST_MIMO2_DFLASH_MAXGEN) { stop = true; break; }
+            }
+        }
+        ds4_session_free(session);
+
+        int nplain = 0;
+        TEST_ASSERT(ok && test_plain_greedy(engine, &prompt, TEST_MIMO2_DFLASH_MAXGEN, plain, &nplain));
+        TEST_ASSERT(nspec > 0);
+        total_tokens += nspec;
+        total_calls += calls;
+        int diverge = -1;
+        for (int i = 0; i < nspec && i < nplain; i++) {
+            if (spec[i] != plain[i]) { diverge = i; break; }
+        }
+        if (diverge < 0 && nspec != nplain) diverge = nspec < nplain ? nspec : nplain;
+        if (diverge < 0) {
+            fprintf(stderr, "ds4-test: mimo2-dflash-verify prompt %d: %d tokens identical in %d calls\n",
+                    p, nspec, calls);
+        } else {
+            float worst_gap = 0.0f;
+            int worst_at = -1;
+            TEST_ASSERT(test_mtp_worst_argmax_gap(engine, &prompt, spec, nspec, &worst_gap, &worst_at));
+            fprintf(stderr, "ds4-test: mimo2-dflash-verify prompt %d: diverged at %d of %d/%d in %d calls, "
+                            "worst_argmax_gap=%.4f at=%d\n",
+                    p, diverge, nspec, nplain, calls, worst_gap, worst_at);
+            TEST_ASSERT(worst_gap <= TEST_MIMO2_MTP_TIE);
+        }
+        ds4_tokens_free(&prompt);
+    }
+    fprintf(stderr, "ds4-test: mimo2-dflash-verify widest block %d, %.2f tokens per call\n",
+            widest, total_calls ? (double)total_tokens / total_calls : 0.0);
+    TEST_ASSERT(widest >= 3);
+    TEST_ASSERT(total_calls > 0 && 2 * total_tokens > 3 * total_calls);
+    free(spec);
+    free(plain);
+    ds4_engine_close(engine);
+}
+
 /* Same invariant as the MTP depth smoke, but for the DSpark support model.  This
  * is separate from the fixture because it teacher-forces every committed token
  * through normal decode and directly checks that DSpark never commits a token
@@ -7224,6 +7419,8 @@ static const ds4_test_entry test_entries[] = {
     {"--metal-tensor-equivalence", "metal-tensor-equivalence", "fast/quality Metal prompt-logit and greedy equivalence", test_metal_mpp_equivalence},
     {"--streaming-decode-prefill-correctness", "streaming-decode-prefill-correctness", "streaming decode-style cold prefill drift and repeatability", test_streaming_decode_prefill_correctness},
     {"--mtp-verify-depth", "mtp-verify-depth", "MTP speculative verify commits autoregressive-identical tokens at draft depth > 2", test_mtp_verify_depth},
+    {"--mimo2-mtp-verify", "mimo2-mtp-verify", "MiMo native MTP greedy speculation commits the plain greedy stream", test_mimo2_mtp_verify},
+    {"--mimo2-dflash-verify", "mimo2-dflash-verify", "MiMo DFlash greedy block speculation commits the plain greedy stream in multi-token blocks", test_mimo2_dflash_verify},
     {"--dspark-verify-depth", "dspark-verify-depth", "DSpark speculative verify commits autoregressive-identical tokens at draft depth > 2", test_dspark_verify_depth},
 #endif
     {"--server", "server", "server parser/rendering/cache unit tests", test_server_unit_group},
@@ -7255,13 +7452,14 @@ static void test_print_help(const char *prog) {
     puts("  DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL=1  Force canonical streamed cold prefill.");
     puts("  DS4_TEST_SNAPSHOT_PROMPT=FILE  Prompt for the session snapshot round trip.");
     puts("  DS4_TEST_SNAPSHOT_CTX=N        Context for the session snapshot round trip.");
-    puts("  DS4_TEST_GLM_MTP=1             Include embedded GLM MTP in snapshot verification.");
+    puts("  DS4_TEST_GLM_MTP=1             Open the engine with embedded MTP (--mtp): snapshot verification, --mimo2-mtp-verify.");
     puts("  DS4_TEST_LONG_PROMPT=FILE  Rendered long-context story fact prompt.");
     puts("  DS4_TEST_VECTOR_FILE=FILE  Official fixture. Default: flash-0731/official.vec.");
     puts("  DS4_TEST_LOCAL_GOLDEN_FILE=FILE  Local fixture. Default: flash-0731/local-golden.vec.");
     puts("  DS4_TEST_MPP_EQ_CASE=NAME  Run only Tensor equivalence cases whose id contains NAME.");
     puts("  DS4_TEST_MTP=FILE         Legacy MTP support GGUF for --mtp-verify-depth.");
     puts("  DS4_TEST_DSPARK=FILE      DSpark support GGUF for --dspark-verify-depth.");
+    puts("  DS4_TEST_DFLASH=FILE      MiMo DFlash sidecar GGUF for --mimo2-dflash-verify.");
     puts("  DS4_TEST_CONTINUED_PREFILL_TOKENS=N  Large suffix size for --glm53-continued-prefill.");
     puts("  DS4_TEST_CONTINUED_PREFILL_STEPS=N   Number of consecutive large suffixes to test.");
     puts("  DS4_TEST_CONTINUED_PREFILL_ALLOW_COARSE=1  Permit coarse short-suffix progress for baseline timing.");
